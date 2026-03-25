@@ -27,12 +27,12 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 ### Phase 2: AI Processing Layer (STT & Translation)
 *Goal: Convert audio to text and translate it using high-speed APIs.*
 
-- [ ] Setup WebSocket client in Rust for **Deepgram** or **OpenAI Realtime**.
-- [ ] Implement chunk-based audio streaming logic.
-- [ ] Parse partial and final transcripts from the STT engine.
-- [ ] Send transcripts to **Groq (LPU)** for near-instant translation.
-- [ ] Manage API keys and environment variables securely.
-- [ ] **Test:** Real-time text output in the terminal console.
+- [x] Setup WebSocket client in Rust for **Deepgram**.
+- [x] Implement chunk-based audio streaming logic.
+- [x] Parse partial and final transcripts from the STT engine.
+- [x] Send transcripts to **Groq (LPU)** for near-instant translation.
+- [x] Manage API keys and environment variables securely.
+- [x] **Test:** Real-time text output in the terminal console.
 
 ### Phase 3: Delivery Layer (Frontend & UI)
 *Goal: Display the subtitles in a broadcast-ready format.*
@@ -56,5 +56,28 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 ```bash
 docker compose run --rm backend cargo test
 ```
+
+## Run
+
+1. Create environment file from example:
+
+```bash
+cp .env.example .env
+```
+
+2. Fill `DEEPGRAM_API_KEY` and `GROQ_API_KEY` in `.env`.
+
+3. Start backend:
+
+```bash
+docker compose up --build backend
+# or in local
+cd backend
+cargo run 
+```
+
+4. Speak into your default microphone and watch terminal output:
+- `[STT] ...` for final transcript
+- `[English] ...` (or selected target language) for translation
 
 
