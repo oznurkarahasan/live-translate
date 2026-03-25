@@ -1,0 +1,12 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    volumes:
+      - ./backend:/app/backend
+    devices:
+      - "/dev/snd:/dev/snd"
+    environment:
+      - RUST_LOG=debug
+    network_mode: "host"

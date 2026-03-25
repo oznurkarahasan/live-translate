@@ -1,0 +1,26 @@
+# --- Rust / Cargo ---
+/backend/target/
+/backend/Cargo.lock
+**/*.rs.bk
+/backend/.env
+
+# --- Node.js / Next.js ---
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+/frontend/build/
+/frontend/.env*
+/frontend/npm-debug.log*
+/frontend/.DS_Store
+
+# --- Docker ---
+.docker-compose.log
+.docker-data/
+
+# --- IDE & OS ---
+.vscode/
+.idea/
+.env
+*.swp
+*.log
+dist/
