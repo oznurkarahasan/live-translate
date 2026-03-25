@@ -3,10 +3,25 @@ services:
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
+    # Run as the host user so the PulseAudio socket (owned by uid 1000) is accessible
+    user: "1000:1000"
     volumes:
       - ./backend:/app/backend
+      # PulseAudio socket — host mic access
+      - /run/user/1000/pulse:/run/user/1000/pulse:ro
+      # Cargo cache: reuse host builds, and avoid root-vs-user locking issues
+      - ./backend/target:/app/backend/target
     devices:
       - "/dev/snd:/dev/snd"
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - DEEPGRAM_MODEL=${DEEPGRAM_MODEL:-nova-2}
+      - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE:-tr}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+      - TARGET_LANGUAGE=${TARGET_LANGUAGE:-English}
     network_mode: "host"
+    group_add:
+      - audio
