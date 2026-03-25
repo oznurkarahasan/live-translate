@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize the logger to see system outputs in the terminal
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     dotenvy::dotenv().ok();
-    
+
     log::info!("Starting Live-Translate Backend...");
 
     let capture = audio::start_streaming()?;
