@@ -1,8 +1,8 @@
 // Copyright 2026 live-translate
 // Licensed under the Apache License, Version 2.0
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use anyhow::Context;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 
@@ -87,12 +87,12 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
             }
 
             let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-            if count % 100 == 0 {
+            if count.is_multiple_of(100) {
                 log::info!("Stream Active. Processed buffer size: {}", resampled.len());
             }
         },
         move |err| log::error!("Stream error: {}", err),
-        None
+        None,
     )?;
 
     stream.play()?;
@@ -122,6 +122,10 @@ mod tests {
 
         assert!(!result.is_empty(), "Resampled output must not be empty");
         assert_eq!(result.len(), 1, "3 mono frames at 48kHz → 1 frame at 16kHz");
-        assert!((result[0] - 0.5).abs() < 1e-5, "Expected ~0.5, got {}", result[0]);
+        assert!(
+            (result[0] - 0.5).abs() < 1e-5,
+            "Expected ~0.5, got {}",
+            result[0]
+        );
     }
 }

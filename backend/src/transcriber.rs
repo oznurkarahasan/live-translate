@@ -25,8 +25,7 @@ impl Phase2Config {
         Ok(Self {
             deepgram_api_key: std::env::var("DEEPGRAM_API_KEY")
                 .context("Missing env var: DEEPGRAM_API_KEY")?,
-            groq_api_key: std::env::var("GROQ_API_KEY")
-                .context("Missing env var: GROQ_API_KEY")?,
+            groq_api_key: std::env::var("GROQ_API_KEY").context("Missing env var: GROQ_API_KEY")?,
             deepgram_model: std::env::var("DEEPGRAM_MODEL")
                 .unwrap_or_else(|_| "nova-2".to_string()),
             deepgram_language: std::env::var("DEEPGRAM_LANGUAGE")
@@ -147,7 +146,10 @@ fn extract_partial_transcript(text: &str) -> Option<String> {
         return None;
     }
 
-    let is_final = value.get("is_final").and_then(Value::as_bool).unwrap_or(false);
+    let is_final = value
+        .get("is_final")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if is_final {
         return None;
     }
@@ -166,7 +168,10 @@ fn extract_final_transcript(text: &str) -> Option<String> {
         .trim()
         .to_string();
 
-    let is_final = value.get("is_final").and_then(Value::as_bool).unwrap_or(false);
+    let is_final = value
+        .get("is_final")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     if is_final && !transcript.is_empty() {
         Some(transcript)
@@ -248,8 +253,14 @@ mod tests {
             "is_final": true
         }"#;
 
-        assert_eq!(extract_partial_transcript(partial_payload), Some("merhaba dunya".to_string()));
+        assert_eq!(
+            extract_partial_transcript(partial_payload),
+            Some("merhaba dunya".to_string())
+        );
         assert_eq!(extract_final_transcript(partial_payload), None);
-        assert_eq!(extract_final_transcript(final_payload), Some("merhaba dunya".to_string()));
+        assert_eq!(
+            extract_final_transcript(final_payload),
+            Some("merhaba dunya".to_string())
+        );
     }
 }

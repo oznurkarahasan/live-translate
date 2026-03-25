@@ -55,6 +55,10 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 
 ```bash
 docker compose run --rm backend cargo test
+# in local
+cd backend
+cargo test
+cargo fmt && cargo clippy
 ```
 
 ## Run
