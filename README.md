@@ -1,4 +1,4 @@
-# Live Translate
+# Live Translate (Rust based Ultra Low Latency System)
 
 An ultra-low latency, real-time speech transcription and translation system. This project captures live audio, transcribes it using state-of-the-art STT engines, and translates it instantly using high-speed LLM inference (Groq/LPU).
 
@@ -19,10 +19,10 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 
 - [x] Add dependencies to `backend/Cargo.toml` (`cpal`, `tokio`, `anyhow`, `log`).
 - [x] Implement `audio.rs` module to detect and select default input devices.
-- [ ] Capture raw PCM 16-bit audio data.
-- [ ] Normalize audio to 16kHz Mono (Required by most STT APIs).
+- [x] Capture raw PCM 16-bit audio data.
+- [x] Normalize audio to 16kHz Mono (Required by most STT APIs).
 - [ ] Integrate **VAD (Voice Activity Detection)** to stop streaming during silence.
-- [ ] **Test:** Verify audio buffer levels in Docker logs.
+- [x] **Test:** Verify audio buffer levels in Docker logs.
 
 ### Phase 2: AI Processing Layer (STT & Translation)
 *Goal: Convert audio to text and translate it using high-speed APIs.*
@@ -50,3 +50,11 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 - [ ] Optimize Docker images using Multi-stage builds.
 - [ ] Finalize CI/CD pipelines for automated testing.
 - [ ] **Final Goal:** Achieve end-to-end latency of **<800ms**.
+
+## Tests
+
+```bash
+docker compose run --rm backend cargo test
+```
+
+
