@@ -255,7 +255,8 @@ async fn translate_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_final_transcript, extract_partial_transcript};
+    use super::{extract_final_transcript, extract_partial_transcript, TranslationUpdate};
+    use serde_json::json;
 
     #[test]
     fn parses_partial_and_final_transcripts() {
@@ -276,6 +277,20 @@ mod tests {
         assert_eq!(
             extract_final_transcript(final_payload),
             Some("merhaba dunya".to_string())
+        );
+    }
+
+    #[test]
+    fn translation_update_serializes_to_expected_json_shape() {
+        let update = TranslationUpdate {
+            original: "merhaba".to_string(),
+            translated: "hello".to_string(),
+        };
+
+        let payload = serde_json::to_value(update).unwrap();
+        assert_eq!(
+            payload,
+            json!({"original": "merhaba", "translated": "hello"})
         );
     }
 }
