@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0
 
 mod audio;
+mod server;
 mod transcriber;
+use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,8 +16,11 @@ async fn main() -> anyhow::Result<()> {
 
     let capture = audio::start_streaming()?;
     let config = transcriber::Phase2Config::from_env()?;
+    let (tx, _) = broadcast::channel(128);
 
-    transcriber::run_realtime_pipeline(capture.rx, config).await?;
+    tokio::spawn(server::start_server(tx.clone()));
+
+    transcriber::run_realtime_pipeline(capture.rx, config, tx).await?;
 
     Ok(())
 }
