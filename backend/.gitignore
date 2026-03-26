@@ -1,0 +1,4 @@
+/backend/target/
+/backend/Cargo.lock
+**/*.rs.bk
+/backend/.env
