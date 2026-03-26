@@ -37,9 +37,9 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 ### Phase 3: Delivery Layer (Frontend & UI)
 *Goal: Display the subtitles in a broadcast-ready format.*
 
-- [ ] Initialize **Next.js** project in the `frontend/` directory.
-- [ ] Setup WebSocket communication between Backend and Frontend.
-- [ ] Create a transparent subtitle overlay component.
+- [x] Initialize **Next.js** project in the `frontend/` directory.
+- [x] Setup WebSocket communication between Backend and Frontend.
+- [x] Create a transparent subtitle overlay component.
 - [ ] Implement a basic dashboard for language selection and microphone toggle.
 - [ ] **Test:** Ensure subtitles appear on the web UI with <500ms latency.
 
@@ -55,10 +55,14 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 
 ```bash
 docker compose run --rm backend cargo test
-# in local
+# in local, backend tests
 cd backend
 cargo test
 cargo fmt && cargo clippy
+# frontend test
+cd frontend
+npm run test:run
+npm run lint
 ```
 
 ## Run

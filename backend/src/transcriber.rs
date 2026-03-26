@@ -5,11 +5,18 @@ use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
 use http::HeaderValue;
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TranslationUpdate {
+    pub original: String,
+    pub translated: String,
+}
 
 pub struct Phase2Config {
     deepgram_api_key: String,
@@ -41,6 +48,7 @@ impl Phase2Config {
 pub async fn run_realtime_pipeline(
     mut audio_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     cfg: Phase2Config,
+    tx: broadcast::Sender<TranslationUpdate>,
 ) -> anyhow::Result<()> {
     let stt_url = format!(
         "wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=true&model={}&language={}",
@@ -103,7 +111,14 @@ pub async fn run_realtime_pipeline(
                             ).await;
 
                             match translation {
-                                Ok(translated_text) => println!("[{}] {}", cfg.target_language, translated_text),
+                                Ok(translated_text) => {
+                                    println!("[{}] {}", cfg.target_language, translated_text);
+
+                                    let _ = tx.send(TranslationUpdate {
+                                        original: final_transcript,
+                                        translated: translated_text,
+                                    });
+                                }
                                 Err(err) => log::error!("Translation failed: {}", err),
                             }
                         }
@@ -240,7 +255,8 @@ async fn translate_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_final_transcript, extract_partial_transcript};
+    use super::{extract_final_transcript, extract_partial_transcript, TranslationUpdate};
+    use serde_json::json;
 
     #[test]
     fn parses_partial_and_final_transcripts() {
@@ -261,6 +277,20 @@ mod tests {
         assert_eq!(
             extract_final_transcript(final_payload),
             Some("merhaba dunya".to_string())
+        );
+    }
+
+    #[test]
+    fn translation_update_serializes_to_expected_json_shape() {
+        let update = TranslationUpdate {
+            original: "merhaba".to_string(),
+            translated: "hello".to_string(),
+        };
+
+        let payload = serde_json::to_value(update).unwrap();
+        assert_eq!(
+            payload,
+            json!({"original": "merhaba", "translated": "hello"})
         );
     }
 }
