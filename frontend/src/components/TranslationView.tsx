@@ -76,7 +76,7 @@ export default function TranslationView({ config, translation, onStop, className
                     muted
                     loop={config.source === "file"}
                     playsInline
-                    className="w-full h-full object-cover grayscale-[20%] transition-filter duration-500 hover:grayscale-0"
+                    className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-cover"}`}
                 />
 
                 {/* Connection Indicator */}
@@ -91,8 +91,7 @@ export default function TranslationView({ config, translation, onStop, className
                     </span>
                 </div>
 
-                {/* Translation Banner Overlay - Optional for a more "cinematic" look */}
-                <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-black/80 via-transparent to-black/20" />
+                {/* Keep raw camera/file image without dark overlay to preserve original framing */}
             </div>
 
             {/* Modern Translation Box */}
