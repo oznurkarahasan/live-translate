@@ -105,11 +105,6 @@ export default function Home() {
           className="z-10"
         />
       )}
-
-      {/* Footer Branding or Version */}
-      <div className="absolute bottom-8 left-0 right-0 text-center pointer-events-none opacity-20">
-        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.4em]">Live Translate Premium 2.0</p>
-      </div>
     </main>
   );
 }
