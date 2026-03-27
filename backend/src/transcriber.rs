@@ -113,6 +113,19 @@ pub async fn run_realtime_pipeline(
 
                             let language_selection = settings_rx.borrow().clone();
 
+                            if is_same_language_pair(&language_selection) {
+                                println!(
+                                    "[{}] {}",
+                                    language_selection.target_language, final_transcript
+                                );
+
+                                let _ = tx.send(TranslationUpdate {
+                                    original: final_transcript.clone(),
+                                    translated: final_transcript,
+                                });
+                                continue;
+                            }
+
                             let translation = translate_text(
                                 &http_client,
                                 &cfg.groq_api_key,
@@ -279,6 +292,13 @@ fn extract_final_transcript(text: &str) -> Option<String> {
     }
 }
 
+fn is_same_language_pair(language_selection: &LanguageSelection) -> bool {
+    language_selection
+        .spoken_language
+        .trim()
+        .eq_ignore_ascii_case(language_selection.target_language.trim())
+}
+
 async fn translate_text(
     client: &Client,
     groq_api_key: &str,
@@ -342,7 +362,10 @@ async fn translate_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_final_transcript, extract_partial_transcript, TranslationUpdate};
+    use super::{
+        extract_final_transcript, extract_partial_transcript, is_same_language_pair,
+        LanguageSelection, TranslationUpdate,
+    };
     use serde_json::json;
 
     #[test]
@@ -379,5 +402,20 @@ mod tests {
             payload,
             json!({"original": "merhaba", "translated": "hello"})
         );
+    }
+
+    #[test]
+    fn detects_same_language_selection() {
+        let same = LanguageSelection {
+            spoken_language: "Turkish".to_string(),
+            target_language: "turkish".to_string(),
+        };
+        let different = LanguageSelection {
+            spoken_language: "Turkish".to_string(),
+            target_language: "English".to_string(),
+        };
+
+        assert!(is_same_language_pair(&same));
+        assert!(!is_same_language_pair(&different));
     }
 }

@@ -21,32 +21,49 @@ export default function TranslationView({ config, translation, onStop, className
     const videoRef = useRef<HTMLVideoElement>(null);
 
     useEffect(() => {
+        const videoEl = videoRef.current;
+        let isDisposed = false;
         let localStream: MediaStream | null = null;
         let localFileUrl: string | null = null;
 
         if (config.source === "camera") {
             navigator.mediaDevices.getUserMedia({ video: true, audio: false })
                 .then((s) => {
+                    if (isDisposed) {
+                        s.getTracks().forEach((track) => track.stop());
+                        return;
+                    }
+
                     localStream = s;
-                    if (videoRef.current) {
-                        videoRef.current.srcObject = s;
+                    if (videoEl) {
+                        videoEl.srcObject = s;
+                        videoEl.src = "";
                     }
                 })
                 .catch((err) => console.error("Error accessing camera:", err));
         } else if (config.source === "file" && config.file) {
             const url = URL.createObjectURL(config.file);
             localFileUrl = url;
-            if (videoRef.current) {
-                videoRef.current.src = url;
+            if (videoEl) {
+                videoEl.srcObject = null;
+                videoEl.src = url;
             }
         }
 
         return () => {
+            isDisposed = true;
+
             if (localStream) {
                 localStream.getTracks().forEach((track) => track.stop());
             }
+
             if (localFileUrl) {
                 URL.revokeObjectURL(localFileUrl);
+            }
+
+            if (videoEl) {
+                videoEl.srcObject = null;
+                videoEl.src = "";
             }
         };
     }, [config]);
