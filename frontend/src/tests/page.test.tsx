@@ -1,8 +1,8 @@
-import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "@testing-library/jest-dom/vitest";
 
-import Home from "./page";
+import Home from "../app/page";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
