@@ -36,11 +36,11 @@ impl Phase2Config {
             deepgram_model: std::env::var("DEEPGRAM_MODEL")
                 .unwrap_or_else(|_| "nova-2".to_string()),
             deepgram_language: std::env::var("DEEPGRAM_LANGUAGE")
-                .unwrap_or_else(|_| "tr".to_string()),
+                .unwrap_or_else(|_| "en".to_string()),
             groq_model: std::env::var("GROQ_MODEL")
                 .unwrap_or_else(|_| "llama-3.1-8b-instant".to_string()),
             target_language: std::env::var("TARGET_LANGUAGE")
-                .unwrap_or_else(|_| "English".to_string()),
+                .unwrap_or_else(|_| "Turkish".to_string()),
         })
     }
 }
@@ -201,7 +201,7 @@ async fn translate_text(
     text: &str,
 ) -> anyhow::Result<String> {
     let prompt = format!(
-        "You are a professional real-time translator. Translate the following text from Turkish to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
+        "You are a professional real-time translator. Translate the following text from English to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
         config.target_language
     );
 
