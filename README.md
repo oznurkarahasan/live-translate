@@ -37,10 +37,11 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 ### Phase 3: Delivery Layer (Frontend & UI)
 *Goal: Display the subtitles in a broadcast-ready format.*
 
-- [ ] Initialize **Next.js** project in the `frontend/` directory.
-- [ ] Setup WebSocket communication between Backend and Frontend.
-- [ ] Create a transparent subtitle overlay component.
-- [ ] Implement a basic dashboard for language selection and microphone toggle.
+- [x] Initialize **Next.js** project in the `frontend/` directory.
+- [x] Setup WebSocket communication between Backend and Frontend.
+- [x] Create a transparent subtitle overlay component.
+- [ ] Add file upload workflow for full-file transcription/translation with synchronized subtitle display.
+- [x] Implement a basic dashboard for language selection and microphone toggle.
 - [ ] **Test:** Ensure subtitles appear on the web UI with <500ms latency.
 
 ### Phase 4: Production & Optimization
@@ -55,10 +56,14 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 
 ```bash
 docker compose run --rm backend cargo test
-# in local
+# in local, backend tests
 cd backend
 cargo test
 cargo fmt && cargo clippy
+# frontend test
+cd frontend
+npm run test:run
+npm run lint
 ```
 
 ## Run
@@ -83,5 +88,39 @@ cargo run
 4. Speak into your default microphone and watch terminal output:
 - `[STT] ...` for final transcript
 - `[English] ...` (or selected target language) for translation
+
+## Upcoming Development Plan (File Translation + Synced Subtitles)
+
+This section describes the planned implementation for full video-file translation with synchronized subtitle rendering.
+
+### Goal
+
+Enable users to upload a video file, process the entire file end-to-end, and display translated subtitles synchronized to playback time.
+
+### Planned Flow
+
+1. The user uploads a video file from the frontend.
+2. Backend creates a processing job (`uploaded -> transcribing -> translating -> ready -> failed`).
+3. Audio is extracted and normalized (mono/16kHz) from the file.
+4. STT runs in file/batch mode and returns timestamped transcript segments.
+5. Each segment is translated while preserving start/end timestamps.
+6. Frontend plays the video and renders subtitles based on `currentTime`.
+
+### Technical Milestones
+
+1. Add backend upload endpoint and job-status endpoint.
+2. Add file processing pipeline with progress updates.
+3. Store segment schema (`startMs`, `endMs`, `original`, `translated`).
+4. Implement frontend progress UI for long-running jobs.
+5. Implement synchronized subtitle renderer tied to video timeline.
+6. (Optional) Export subtitles as WebVTT/SRT.
+
+### MVP Order
+
+1. Upload + status APIs
+2. Timestamped transcription
+3. Segment translation
+4. Synced subtitle rendering in player
+5. Refinements (export, retries, optimization)
 
 
