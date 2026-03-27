@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "@testing-library/jest-dom/vitest";
 
-import Home from "./page";
+import Home from "../app/page";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -28,15 +29,18 @@ describe("Home", () => {
     MockWebSocket.instances = [];
     vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
     vi.stubGlobal(
+      "navigator",
+      {
+        mediaDevices: {
+          getUserMedia: vi.fn().mockResolvedValue({
+            getTracks: () => [],
+          }),
+        },
+      } as unknown as Navigator,
+    );
+    vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-        if (url.endsWith("/settings") && (!init || init.method === "GET")) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({ spoken_language: "English", target_language: "Turkish" }),
-          });
-        }
-
         if (url.endsWith("/settings") && init?.method === "POST") {
           return Promise.resolve({
             ok: true,
@@ -53,17 +57,28 @@ describe("Home", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows selection first and starts translation after apply", async () => {
+  it("keeps language selectors visible and opens source options below", async () => {
     render(<Home />);
 
-    expect(screen.getByText("Select languages and press Apply.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Spoken language")).toBeInTheDocument();
-    expect(screen.getByLabelText("Target language")).toBeInTheDocument();
+    expect(screen.getByText("Spoken Language")).toBeInTheDocument();
+    expect(screen.getByText("Target Language")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    fireEvent.change(screen.getByLabelText("Spoken Language"), { target: { value: "English" } });
+    fireEvent.change(screen.getByLabelText("Target Language"), { target: { value: "Turkish" } });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+      expect(screen.getByText("Input Source")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Camera" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Video File" })).toBeInTheDocument();
+      expect(screen.getByText("Spoken Language")).toBeInTheDocument();
+      expect(screen.getByText("Target Language")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Camera" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start Translation" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Stop")).toBeInTheDocument();
     });
 
     const socket = MockWebSocket.instances[0];
@@ -72,7 +87,7 @@ describe("Home", () => {
     socket.onopen?.();
 
     await waitFor(() => {
-      expect(screen.getByText("Listening for speech...")).toBeInTheDocument();
+      expect(screen.getByText("Waiting for speech input...")).toBeInTheDocument();
     });
 
     socket.onmessage?.({
@@ -83,16 +98,8 @@ describe("Home", () => {
     } as MessageEvent);
 
     await waitFor(() => {
-      expect(screen.getByText("merhaba dunya")).toBeInTheDocument();
-      expect(screen.getByText("hello world")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
-      expect(screen.getByLabelText("Spoken language")).toBeInTheDocument();
-      expect(screen.getByLabelText("Target language")).toBeInTheDocument();
+      expect(screen.getByText(/merhaba dunya/)).toBeInTheDocument();
+      expect(screen.getByText(/hello world/)).toBeInTheDocument();
     });
   });
 });
