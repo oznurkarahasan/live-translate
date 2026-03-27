@@ -6,7 +6,7 @@ interface SetupDialogProps {
     onStart: (config: {
         spokenLanguage: string;
         targetLanguage: string;
-        source: "camera" | "file";
+        source: "camera" | "file" | "none";
         file?: File;
     }) => void;
     className?: string;
@@ -17,7 +17,7 @@ const LANGUAGES = ["English", "Turkish"];
 export default function SetupDialog({ onStart, className }: SetupDialogProps) {
     const [spokenLanguage, setSpokenLanguage] = useState("");
     const [targetLanguage, setTargetLanguage] = useState("");
-    const [source, setSource] = useState<"camera" | "file" | null>(null);
+    const [source, setSource] = useState<"camera" | "file" | "none" | null>(null);
     const [file, setFile] = useState<File | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -39,9 +39,9 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
         }
     }, [isProcessing]);
 
-    const handleSourceSelect = (src: "camera" | "file") => {
+    const handleSourceSelect = (src: "camera" | "file" | "none") => {
         setSource(src);
-        if (src === "camera") {
+        if (src === "camera" || src === "none") {
             setFile(null);
         }
     };
@@ -58,7 +58,7 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
     const isReady =
         spokenLanguage &&
         targetLanguage &&
-        ((source === "camera") || (source === "file" && file && !isProcessing));
+        ((source === "camera") || (source === "none") || (source === "file" && file && !isProcessing));
 
     return (
         <div className={`p-8 bg-black/40 backdrop-blur-xl border border-white/20 rounded-3xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-500 overflow-hidden relative ${className}`}>
@@ -119,10 +119,24 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
 
                         <div className="flex gap-4">
                             <button
+                                onClick={() => handleSourceSelect("none")}
+                                className={`flex-1 p-4 rounded-2xl border flex flex-col items-center gap-3 transition-all
+                   ${source === "none"
+                                        ? 'bg-emerald-600/20 border-emerald-500/50 text-white'
+                                        : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'}`}
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <circle cx="12" cy="12" r="9" strokeWidth={2} />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 17L17 7" />
+                                </svg>
+                                <span className="text-sm font-semibold text-center">Subtitle + Translation Only</span>
+                            </button>
+
+                            <button
                                 onClick={() => handleSourceSelect("camera")}
                                 className={`flex-1 p-4 rounded-2xl border flex flex-col items-center gap-3 transition-all
                    ${source === "camera"
-                                        ? 'bg-blue-600/20 border-blue-500/50 text-white'
+                                        ? 'bg-emerald-600/20 border-emerald-500/50 text-white'
                                         : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'}`}
                             >
                                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -135,7 +149,7 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                                 onClick={() => handleSourceSelect("file")}
                                 className={`flex-1 p-4 rounded-2xl border flex flex-col items-center gap-3 transition-all
                    ${source === "file"
-                                        ? 'bg-purple-600/20 border-purple-500/50 text-white'
+                                        ? 'bg-emerald-600/20 border-emerald-500/50 text-white'
                                         : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'}`}
                             >
                                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

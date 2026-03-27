@@ -6,7 +6,7 @@ interface TranslationViewProps {
     config: {
         spokenLanguage: string;
         targetLanguage: string;
-        source: "camera" | "file";
+        source: "camera" | "file" | "none";
         file?: File;
     };
     translation?: {
@@ -70,7 +70,6 @@ export default function TranslationView({ config, translation, onStop, className
 
     return (
         <div className={`w-full max-w-7xl mx-auto px-2 py-6 relative ${className}`}>
-            {/* Compact status panel fixed to top-right */}
             <div className="fixed top-3 right-3 z-40 w-44 rounded-2xl border border-white/10 bg-black/55 p-3 backdrop-blur-xl">
                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-[0.18em]">Status</p>
                 <div className="mt-1 flex items-center gap-2">
@@ -90,17 +89,25 @@ export default function TranslationView({ config, translation, onStop, className
 
             {/* Main Content centered */}
             <div className="w-full flex flex-col items-center gap-8">
-                {/* Video Container (Clean Frame) */}
-                <div className="w-full max-w-6xl aspect-video bg-zinc-950 rounded-3xl overflow-hidden border border-white/10 shadow-3xl relative mx-auto">
-                    <video
-                        ref={videoRef}
-                        autoPlay
-                        muted
-                        loop={config.source === "file"}
-                        playsInline
-                        className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-cover"}`}
+                {config.source !== "none" && (
+                    <div className="w-full max-w-6xl aspect-video bg-zinc-950 rounded-3xl overflow-hidden border border-white/10 shadow-3xl relative mx-auto">
+                        <video
+                            ref={videoRef}
+                            autoPlay
+                            muted
+                            loop={config.source === "file"}
+                            playsInline
+                            className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-cover"}`}
+                        />
+                    </div>
+                )}
+
+                {config.source === "none" && (
+                    <div
+                        aria-hidden="true"
+                        className="w-full max-w-6xl aspect-video mx-auto"
                     />
-                </div>
+                )}
 
                 {/* Modern Translation Box */}
                 <div className="w-full max-w-5xl space-y-6">

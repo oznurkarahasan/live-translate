@@ -12,7 +12,7 @@ interface TranslationUpdate {
 interface AppConfig {
   spokenLanguage: string;
   targetLanguage: string;
-  source: "camera" | "file";
+  source: "camera" | "file" | "none";
   file?: File;
 }
 

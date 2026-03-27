@@ -57,7 +57,7 @@ describe("Home", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps language selectors visible and opens source options below", async () => {
+  it("supports subtitle-only mode and allows switching source selection", async () => {
     render(<Home />);
 
     expect(screen.getByText("Spoken Language")).toBeInTheDocument();
@@ -68,17 +68,23 @@ describe("Home", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Input Source")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Subtitle + Translation Only" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Camera" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Video File" })).toBeInTheDocument();
       expect(screen.getByText("Spoken Language")).toBeInTheDocument();
       expect(screen.getByText("Target Language")).toBeInTheDocument();
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "Subtitle + Translation Only" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Camera" }));
+    fireEvent.click(screen.getByRole("button", { name: "Subtitle + Translation Only" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Start Translation" }));
 
     await waitFor(() => {
       expect(screen.getByText("Stop")).toBeInTheDocument();
+      expect(screen.queryByRole("video")).not.toBeInTheDocument();
     });
 
     const socket = MockWebSocket.instances[0];
