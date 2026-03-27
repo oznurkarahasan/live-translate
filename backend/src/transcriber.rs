@@ -24,6 +24,7 @@ pub struct Phase2Config {
     deepgram_model: String,
     deepgram_language: String,
     groq_model: String,
+    spoken_language: String,
     target_language: String,
 }
 
@@ -39,6 +40,8 @@ impl Phase2Config {
                 .unwrap_or_else(|_| "en".to_string()),
             groq_model: std::env::var("GROQ_MODEL")
                 .unwrap_or_else(|_| "llama-3.1-8b-instant".to_string()),
+            spoken_language: std::env::var("SPOKEN_LANGUAGE")
+                .unwrap_or_else(|_| "English".to_string()),
             target_language: std::env::var("TARGET_LANGUAGE")
                 .unwrap_or_else(|_| "Turkish".to_string()),
         })
@@ -201,7 +204,8 @@ async fn translate_text(
     text: &str,
 ) -> anyhow::Result<String> {
     let prompt = format!(
-        "You are a professional real-time translator. Translate the following text from English to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
+        "You are a professional real-time translator. Translate the following text from {} to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
+        config.spoken_language,
         config.target_language
     );
 
