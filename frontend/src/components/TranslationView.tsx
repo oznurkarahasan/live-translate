@@ -47,6 +47,7 @@ export default function TranslationView({ config, translation, onStop, className
             if (videoEl) {
                 videoEl.srcObject = null;
                 videoEl.src = url;
+                videoEl.load(); // Explicitly load the new source
             }
         }
 
@@ -97,7 +98,7 @@ export default function TranslationView({ config, translation, onStop, className
                             muted
                             loop={config.source === "file"}
                             playsInline
-                            className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-cover"}`}
+                            className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"}`}
                         />
                     </div>
                 )}
