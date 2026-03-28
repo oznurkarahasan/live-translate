@@ -48,6 +48,7 @@ export default function TranslationView({ config, translation, onStop, className
                 videoEl.srcObject = null;
                 videoEl.src = url;
                 videoEl.load(); // Explicitly load the new source
+                videoEl.play().catch(err => console.error("Video play failed:", err));
             }
         }
 
@@ -95,9 +96,10 @@ export default function TranslationView({ config, translation, onStop, className
                         <video
                             ref={videoRef}
                             autoPlay
-                            muted
+                            muted={config.source === "camera"}
                             loop={config.source === "file"}
                             playsInline
+                            controls={config.source === "file"}
                             className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"}`}
                         />
                     </div>
