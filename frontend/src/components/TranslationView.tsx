@@ -51,14 +51,7 @@ export default function TranslationView({ config, translation, onStop, className
                 videoEl.srcObject = null;
                 videoEl.src = url;
                 videoEl.load(); // Explicitly load the new source
-                const playPromise = videoEl.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(err => {
-                        if (err.name !== "AbortError") {
-                            console.error("Video play failed:", err);
-                        }
-                    });
-                }
+                videoEl.pause(); // Pause until upload finishes
             }
 
             setIsUploading(true);
@@ -76,6 +69,7 @@ export default function TranslationView({ config, translation, onStop, className
             }).then(data => {
                 if (!isDisposed && Array.isArray(data)) {
                     setSubtitles(data);
+                    videoEl?.play().catch((err) => console.error("Play failed:", err));
                 }
             }).catch(e => console.error("Upload error:", e))
                 .finally(() => {
@@ -109,7 +103,7 @@ export default function TranslationView({ config, translation, onStop, className
         } else if (isUploading) {
             activeTranslation = { original: "", translated: "Analysing and translating video..." };
         } else {
-            activeTranslation = undefined; // clear between subtitles
+            activeTranslation = { original: "", translated: "\u00A0" }; // use non-breaking space to keep box height
         }
     }
 
@@ -118,8 +112,19 @@ export default function TranslationView({ config, translation, onStop, className
             <div className="fixed top-3 right-3 z-40 w-44 rounded-2xl border border-white/10 bg-black/55 p-3 backdrop-blur-xl">
                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-[0.18em]">Status</p>
                 <div className="mt-1 flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                    <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-[0.16em]">Live</span>
+                    {config.source === "camera" ? (
+                        <>
+                            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                            <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-[0.16em]">Live</span>
+                        </>
+                    ) : (
+                        <>
+                            <div className={`w-1.5 h-1.5 rounded-full ${isUploading ? "bg-amber-500 animate-pulse" : "bg-blue-500"}`} />
+                            <span className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isUploading ? "text-amber-400" : "text-blue-400"}`}>
+                                {isUploading ? "Analysing" : "Video"}
+                            </span>
+                        </>
+                    )}
                 </div>
                 <p className="mt-2 text-[10px] text-gray-300 leading-tight">
                     {config.spokenLanguage} to {config.targetLanguage}
@@ -136,15 +141,21 @@ export default function TranslationView({ config, translation, onStop, className
             <div className="w-full flex flex-col items-center gap-8">
                 {config.source !== "none" && (
                     <div className="w-full max-w-6xl aspect-video bg-zinc-950 rounded-3xl overflow-hidden border border-white/10 shadow-3xl relative mx-auto">
+                        {isUploading && config.source === "file" && (
+                            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md gap-6 transition-all duration-500">
+                                <div className="w-16 h-16 border-4 border-white/10 border-t-emerald-500 rounded-full animate-spin" />
+                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">Analysing Video...</p>
+                            </div>
+                        )}
                         <video
                             ref={videoRef}
-                            autoPlay
+                            autoPlay={config.source === "camera"}
                             muted={config.source === "camera"}
                             loop={config.source === "file"}
                             playsInline
-                            controls={config.source === "file"}
+                            controls={config.source === "file" && !isUploading}
                             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                            className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"}`}
+                            className={`w-full h-full transform-none transition-opacity duration-700 ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"} ${isUploading ? 'opacity-0' : 'opacity-100'}`}
                         />
                     </div>
                 )}
