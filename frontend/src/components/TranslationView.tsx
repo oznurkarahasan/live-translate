@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface TranslationViewProps {
     config: {
@@ -19,6 +19,9 @@ interface TranslationViewProps {
 
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const [subtitles, setSubtitles] = useState<{ start: number; end: number; text: string }[]>([]);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [isUploading, setIsUploading] = useState(false);
 
     useEffect(() => {
         const videoEl = videoRef.current;
@@ -48,8 +51,36 @@ export default function TranslationView({ config, translation, onStop, className
                 videoEl.srcObject = null;
                 videoEl.src = url;
                 videoEl.load(); // Explicitly load the new source
-                videoEl.play().catch(err => console.error("Video play failed:", err));
+                const playPromise = videoEl.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(err => {
+                        if (err.name !== "AbortError") {
+                            console.error("Video play failed:", err);
+                        }
+                    });
+                }
             }
+
+            setIsUploading(true);
+            const formData = new FormData();
+            formData.append("file", config.file);
+            fetch("http://localhost:3001/upload", {
+                method: "POST",
+                body: formData
+            }).then(async r => {
+                if (!r.ok) {
+                    const text = await r.text();
+                    throw new Error(`Upload failed: ${r.statusText} - ${text}`);
+                }
+                return r.json();
+            }).then(data => {
+                if (!isDisposed && Array.isArray(data)) {
+                    setSubtitles(data);
+                }
+            }).catch(e => console.error("Upload error:", e))
+                .finally(() => {
+                    if (!isDisposed) setIsUploading(false);
+                });
         }
 
         return () => {
@@ -69,6 +100,18 @@ export default function TranslationView({ config, translation, onStop, className
             }
         };
     }, [config]);
+
+    let activeTranslation = translation;
+    if (config.source === "file") {
+        const currentSub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
+        if (currentSub) {
+            activeTranslation = { original: "", translated: currentSub.text };
+        } else if (isUploading) {
+            activeTranslation = { original: "", translated: "Analysing and translating video..." };
+        } else {
+            activeTranslation = undefined; // clear between subtitles
+        }
+    }
 
     return (
         <div className={`w-full max-w-7xl mx-auto px-2 py-6 relative ${className}`}>
@@ -100,6 +143,7 @@ export default function TranslationView({ config, translation, onStop, className
                             loop={config.source === "file"}
                             playsInline
                             controls={config.source === "file"}
+                            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
                             className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"}`}
                         />
                     </div>
@@ -114,12 +158,14 @@ export default function TranslationView({ config, translation, onStop, className
 
                 {/* Modern Translation Box */}
                 <div className="w-full max-w-5xl space-y-6">
-                    {translation ? (
+                    {activeTranslation ? (
                         <div className="flex flex-col items-center animate-in slide-in-from-bottom-8 duration-700">
                             {/* Original Text (Subtle) */}
-                            <p className="text-gray-400/80 text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl">
-                                &quot;{translation.original}&quot;
-                            </p>
+                            {activeTranslation.original && (
+                                <p className="text-gray-400/80 text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl">
+                                    &quot;{activeTranslation.original}&quot;
+                                </p>
+                            )}
 
                             {/* Translated Highlight */}
                             <div className="w-full bg-gradient-to-b from-white/5 to-white/0 backdrop-blur-3xl border border-white/15 p-10 rounded-[2.5rem] shadow-2xl relative">
@@ -128,7 +174,7 @@ export default function TranslationView({ config, translation, onStop, className
                                 <div className="absolute bottom-0 right-12 w-16 h-[2px] bg-blue-500/50" />
 
                                 <p className="text-white text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                    {translation.translated}
+                                    {activeTranslation.translated}
                                 </p>
                             </div>
                         </div>
