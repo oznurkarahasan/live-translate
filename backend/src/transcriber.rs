@@ -26,13 +26,13 @@ pub struct LanguageSelection {
 }
 
 pub struct Phase2Config {
-    deepgram_api_key: String,
-    groq_api_key: String,
-    deepgram_model: String,
-    deepgram_language: String,
-    groq_model: String,
-    spoken_language: String,
-    target_language: String,
+    pub deepgram_api_key: String,
+    pub groq_api_key: String,
+    pub deepgram_model: String,
+    pub deepgram_language: String,
+    pub groq_model: String,
+    pub spoken_language: String,
+    pub target_language: String,
 }
 
 impl Phase2Config {
@@ -199,7 +199,7 @@ pub async fn run_realtime_pipeline(
     Ok(())
 }
 
-fn resolve_deepgram_language(spoken_language: &str, fallback_language: &str) -> String {
+pub fn resolve_deepgram_language(spoken_language: &str, fallback_language: &str) -> String {
     match spoken_language {
         "English" => "en".to_string(),
         "Turkish" => "tr".to_string(),
@@ -292,14 +292,14 @@ fn extract_final_transcript(text: &str) -> Option<String> {
     }
 }
 
-fn is_same_language_pair(language_selection: &LanguageSelection) -> bool {
+pub fn is_same_language_pair(language_selection: &LanguageSelection) -> bool {
     language_selection
         .spoken_language
         .trim()
         .eq_ignore_ascii_case(language_selection.target_language.trim())
 }
 
-async fn translate_text(
+pub async fn translate_text(
     client: &Client,
     groq_api_key: &str,
     groq_model: &str,
@@ -307,7 +307,7 @@ async fn translate_text(
     language_selection: &LanguageSelection,
 ) -> anyhow::Result<String> {
     let prompt = format!(
-        "You are a professional real-time translator. Translate the following text from {} to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
+        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.",
         language_selection.spoken_language,
         language_selection.target_language
     );

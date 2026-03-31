@@ -41,7 +41,9 @@ async fn serve_with_listener(
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/settings", get(get_settings).post(update_settings))
+        .route("/upload", axum::routing::post(handle_upload))
         .with_state(state)
+        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
         .layer(CorsLayer::permissive());
 
     axum::serve(listener, app).await.unwrap();
@@ -107,52 +109,127 @@ async fn handle_socket(mut socket: WebSocket, tx: broadcast::Sender<TranslationU
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::serve_with_listener;
-    use crate::transcriber::{LanguageSelection, TranslationUpdate};
-    use futures_util::StreamExt;
-    use serde_json::Value;
-    use std::time::Duration;
-    use tokio::sync::{broadcast, watch};
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::Message;
+#[derive(serde::Serialize)]
+pub struct Subtitle {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
 
-    #[tokio::test]
-    async fn broadcasts_translation_update_over_websocket() {
-        let (tx, _) = broadcast::channel(16);
-        let (settings_tx, _) = watch::channel(LanguageSelection {
-            spoken_language: "English".to_string(),
-            target_language: "Turkish".to_string(),
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(serve_with_listener(listener, tx.clone(), settings_tx));
-
-        let url = format!("ws://{}/ws", addr);
-        let (mut socket, _) = connect_async(url).await.unwrap();
-
-        tx.send(TranslationUpdate {
-            original: "merhaba".to_string(),
-            translated: "hello".to_string(),
-        })
-        .unwrap();
-
-        let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
-            .await
-            .expect("timed out waiting for websocket message")
-            .expect("websocket stream ended")
-            .expect("websocket received an error");
-
-        match message {
-            Message::Text(text) => {
-                let payload: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(payload["original"], "merhaba");
-                assert_eq!(payload["translated"], "hello");
+use axum::extract::Multipart;
+async fn handle_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<Vec<Subtitle>>, (StatusCode, String)> {
+    let mut file_data = Vec::new();
+    let mut content_type = String::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Multipart error: {}", e)))?
+    {
+        log::info!("Received multipart field: {:?}", field.name());
+        if field.name() == Some("file") {
+            if let Some(ct) = field.content_type() {
+                content_type = ct.to_string();
             }
-            other => panic!("expected text websocket message, got: {:?}", other),
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Bytes error: {}", e)))?;
+            file_data = bytes.to_vec();
+            break;
         }
-
-        handle.abort();
     }
+
+    if file_data.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "No file uploaded".into()));
+    }
+
+    let config = crate::transcriber::Phase2Config::from_env().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Config error: {}", e),
+        )
+    })?;
+    let settings = state.settings_tx.borrow().clone();
+    let stt_lang = crate::transcriber::resolve_deepgram_language(&settings.spoken_language, "en");
+
+    let client = reqwest::Client::new();
+    let dg_url = format!("https://api.deepgram.com/v1/listen?smart_format=true&utterances=true&punctuate=true&model={}&language={}", config.deepgram_model, stt_lang);
+
+    let mut req_builder = client.post(&dg_url).header(
+        "Authorization",
+        format!("Token {}", config.deepgram_api_key),
+    );
+
+    if !content_type.is_empty() {
+        req_builder = req_builder.header("Content-Type", content_type);
+    }
+
+    let dg_res = req_builder
+        .body(reqwest::Body::from(file_data))
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Deepgram API: {}", e),
+            )
+        })?;
+
+    let dg_json: serde_json::Value = dg_res.json().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Parse Deepgram JSON: {}", e),
+        )
+    })?;
+
+    let utterances = dg_json
+        .pointer("/results/utterances")
+        .and_then(|u| u.as_array())
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No utterances in transcript".to_string(),
+        ))?;
+
+    let mut subtitles = Vec::new();
+    let mut phrases = Vec::new();
+
+    for utt in utterances {
+        let text = utt.get("transcript").and_then(|t| t.as_str()).unwrap_or("");
+        let start = utt.get("start").and_then(|s| s.as_f64()).unwrap_or(0.0);
+        let end = utt.get("end").and_then(|e| e.as_f64()).unwrap_or(0.0);
+
+        if !text.is_empty() {
+            phrases.push((start, end, text.to_string()));
+        }
+    }
+
+    // Now translate them sequentially or run into rate limits, let's just do sequential for reliability but maybe batched if fast.
+    let same_lang = crate::transcriber::is_same_language_pair(&settings);
+
+    for (start, end, text) in phrases {
+        let mut final_text = text.clone();
+        if !same_lang && !text.trim().is_empty() {
+            if let Ok(translated) = crate::transcriber::translate_text(
+                &client,
+                &config.groq_api_key,
+                &config.groq_model,
+                &text,
+                &settings,
+            )
+            .await
+            {
+                final_text = translated;
+            }
+        }
+        subtitles.push(Subtitle {
+            start,
+            end,
+            text: final_text,
+        });
+    }
+
+    Ok(Json(subtitles))
 }

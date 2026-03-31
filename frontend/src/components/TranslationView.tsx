@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface TranslationViewProps {
     config: {
@@ -19,6 +19,9 @@ interface TranslationViewProps {
 
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const [subtitles, setSubtitles] = useState<{ start: number; end: number; text: string }[]>([]);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [isUploading, setIsUploading] = useState(false);
 
     useEffect(() => {
         const videoEl = videoRef.current;
@@ -47,7 +50,42 @@ export default function TranslationView({ config, translation, onStop, className
             if (videoEl) {
                 videoEl.srcObject = null;
                 videoEl.src = url;
+                videoEl.load(); // Explicitly load the new source
+                videoEl.pause(); // Pause until upload finishes
             }
+
+            const processUpload = async () => {
+                // Defer the state update to avoid synchronous cascading renders inside useEffect
+                setTimeout(() => {
+                    if (!isDisposed) setIsUploading(true);
+                }, 0);
+
+                try {
+                    const formData = new FormData();
+                    formData.append("file", config.file!);
+                    const r = await fetch("http://localhost:3001/upload", {
+                        method: "POST",
+                        body: formData
+                    });
+
+                    if (!r.ok) {
+                        const text = await r.text();
+                        throw new Error(`Upload failed: ${r.statusText} - ${text}`);
+                    }
+
+                    const data = await r.json();
+                    if (!isDisposed && Array.isArray(data)) {
+                        setSubtitles(data);
+                        videoEl?.play().catch((err) => console.error("Play failed:", err));
+                    }
+                } catch (e) {
+                    console.error("Upload error:", e);
+                } finally {
+                    if (!isDisposed) setIsUploading(false);
+                }
+            };
+
+            processUpload();
         }
 
         return () => {
@@ -68,13 +106,36 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
+    let activeTranslation = translation;
+    if (config.source === "file") {
+        const currentSub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
+        if (currentSub) {
+            activeTranslation = { original: "", translated: currentSub.text };
+        } else if (isUploading) {
+            activeTranslation = { original: "", translated: "Analysing and translating video..." };
+        } else {
+            activeTranslation = { original: "", translated: "\u00A0" }; // use non-breaking space to keep box height
+        }
+    }
+
     return (
         <div className={`w-full max-w-7xl mx-auto px-2 py-6 relative ${className}`}>
             <div className="fixed top-3 right-3 z-40 w-44 rounded-2xl border border-white/10 bg-black/55 p-3 backdrop-blur-xl">
                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-[0.18em]">Status</p>
                 <div className="mt-1 flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                    <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-[0.16em]">Live</span>
+                    {config.source === "camera" ? (
+                        <>
+                            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                            <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-[0.16em]">Live</span>
+                        </>
+                    ) : (
+                        <>
+                            <div className={`w-1.5 h-1.5 rounded-full ${isUploading ? "bg-amber-500 animate-pulse" : "bg-blue-500"}`} />
+                            <span className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isUploading ? "text-amber-400" : "text-blue-400"}`}>
+                                {isUploading ? "Analysing" : "Video"}
+                            </span>
+                        </>
+                    )}
                 </div>
                 <p className="mt-2 text-[10px] text-gray-300 leading-tight">
                     {config.spokenLanguage} to {config.targetLanguage}
@@ -91,13 +152,21 @@ export default function TranslationView({ config, translation, onStop, className
             <div className="w-full flex flex-col items-center gap-8">
                 {config.source !== "none" && (
                     <div className="w-full max-w-6xl aspect-video bg-zinc-950 rounded-3xl overflow-hidden border border-white/10 shadow-3xl relative mx-auto">
+                        {isUploading && config.source === "file" && (
+                            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md gap-6 transition-all duration-500">
+                                <div className="w-16 h-16 border-4 border-white/10 border-t-emerald-500 rounded-full animate-spin" />
+                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">Analysing Video...</p>
+                            </div>
+                        )}
                         <video
                             ref={videoRef}
-                            autoPlay
-                            muted
+                            autoPlay={config.source === "camera"}
+                            muted={config.source === "camera"}
                             loop={config.source === "file"}
                             playsInline
-                            className={`w-full h-full transform-none ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-cover"}`}
+                            controls={config.source === "file" && !isUploading}
+                            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                            className={`w-full h-full transform-none transition-opacity duration-700 ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"} ${isUploading ? 'opacity-0' : 'opacity-100'}`}
                         />
                     </div>
                 )}
@@ -111,12 +180,14 @@ export default function TranslationView({ config, translation, onStop, className
 
                 {/* Modern Translation Box */}
                 <div className="w-full max-w-5xl space-y-6">
-                    {translation ? (
+                    {activeTranslation ? (
                         <div className="flex flex-col items-center animate-in slide-in-from-bottom-8 duration-700">
                             {/* Original Text (Subtle) */}
-                            <p className="text-gray-400/80 text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl">
-                                &quot;{translation.original}&quot;
-                            </p>
+                            {activeTranslation.original && (
+                                <p className="text-gray-400/80 text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl">
+                                    &quot;{activeTranslation.original}&quot;
+                                </p>
+                            )}
 
                             {/* Translated Highlight */}
                             <div className="w-full bg-gradient-to-b from-white/5 to-white/0 backdrop-blur-3xl border border-white/15 p-10 rounded-[2.5rem] shadow-2xl relative">
@@ -125,7 +196,7 @@ export default function TranslationView({ config, translation, onStop, className
                                 <div className="absolute bottom-0 right-12 w-16 h-[2px] bg-blue-500/50" />
 
                                 <p className="text-white text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                    {translation.translated}
+                                    {activeTranslation.translated}
                                 </p>
                             </div>
                         </div>
