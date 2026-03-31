@@ -76,19 +76,47 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
 
     log::info!("Hardware: {}Hz, {} channels", sample_rate, channels);
 
+    let mut hangover: usize = 0;
+    // Set an RMS threshold for VAD (adjust if needed)
+    // The previous value 0.01 was too low for ambient background noise.
+    const RMS_THRESHOLD: f32 = 0.04;
+    // How many chunks to keep sending after speech is no longer detected (prevents clipping word tails)
+    const HANGOVER_FRAMES: usize = 50;
+
     let stream = device.build_input_stream(
         &config_range.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             let resampled = process_audio_frame(data, channels, sample_rate);
-            let pcm = float_to_pcm16le(&resampled);
+            
+            let rms = if resampled.is_empty() {
+                0.0
+            } else {
+                (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32).sqrt()
+            };
 
-            if let Err(err) = tx.send(pcm) {
-                log::error!("Failed to queue audio chunk: {}", err);
+            let is_speech = rms > RMS_THRESHOLD;
+
+            if is_speech {
+                hangover = HANGOVER_FRAMES;
+            } else if hangover > 0 {
+                hangover -= 1;
+            }
+
+            if hangover > 0 {
+                let pcm = float_to_pcm16le(&resampled);
+                if let Err(err) = tx.send(pcm) {
+                    log::error!("Failed to queue audio chunk: {}", err);
+                }
             }
 
             let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
             if count.is_multiple_of(100) {
-                log::info!("Stream Active. Processed buffer size: {}", resampled.len());
+                log::info!(
+                    "Stream check. Processed buffer size: {}, RMS: {:.4}, VAD Active: {}",
+                    resampled.len(),
+                    rms,
+                    hangover > 0
+                );
             }
         },
         move |err| log::error!("Stream error: {}", err),

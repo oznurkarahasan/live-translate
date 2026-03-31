@@ -82,17 +82,23 @@ pub async fn run_realtime_pipeline(
 
     loop {
         tokio::select! {
-            maybe_chunk = audio_rx.recv() => {
+            maybe_chunk = tokio::time::timeout(std::time::Duration::from_secs(8), audio_rx.recv()) => {
                 match maybe_chunk {
-                    Some(chunk) => {
+                    Ok(Some(chunk)) => {
                         ws_write
                             .send(Message::Binary(chunk))
                             .await
                             .context("Failed sending audio chunk to Deepgram")?;
                     }
-                    None => {
+                    Ok(None) => {
                         ws_write.send(Message::Close(None)).await.ok();
                         break;
+                    }
+                    Err(_) => {
+                        // VAD dropped silent chunks. Deepgram requires streaming or KeepAlives to stay connected.
+                        log::debug!("VAD is active (silence detected). Sending KeepAlive to Deepgram.");
+                        // Keep connection alive without incurring extra compute for audio parsing
+                        ws_write.send(Message::Text(r#"{"type": "KeepAlive"}"#.into())).await.ok();
                     }
                 }
             }
