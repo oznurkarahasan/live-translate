@@ -307,7 +307,7 @@ pub async fn translate_text(
     language_selection: &LanguageSelection,
 ) -> anyhow::Result<String> {
     let prompt = format!(
-        "You are a professional real-time translator. Translate the following text from {} to {}. CRITICAL: Output ONLY the direct translation. Do not include any explanations, preambles, or notes. Do not say 'This means' or 'Translated as'.",
+        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.",
         language_selection.spoken_language,
         language_selection.target_language
     );

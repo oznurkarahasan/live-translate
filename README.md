@@ -40,7 +40,7 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 - [x] Initialize **Next.js** project in the `frontend/` directory.
 - [x] Setup WebSocket communication between Backend and Frontend.
 - [x] Create a transparent subtitle overlay component.
-- [ ] Add file upload workflow for full-file transcription/translation with synchronized subtitle display.
+- [x] Add file upload workflow for full-file transcription/translation with synchronized subtitle display.
 - [x] Implement a basic dashboard for language selection and microphone toggle.
 - [ ] **Test:** Ensure subtitles appear on the web UI with <500ms latency.
 
@@ -59,6 +59,7 @@ docker compose run --rm backend cargo test
 # in local, backend tests
 cd backend
 cargo test
+cargo check
 cargo fmt && cargo clippy
 # frontend test
 cd frontend

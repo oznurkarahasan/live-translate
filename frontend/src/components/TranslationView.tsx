@@ -54,27 +54,38 @@ export default function TranslationView({ config, translation, onStop, className
                 videoEl.pause(); // Pause until upload finishes
             }
 
-            setIsUploading(true);
-            const formData = new FormData();
-            formData.append("file", config.file);
-            fetch("http://localhost:3001/upload", {
-                method: "POST",
-                body: formData
-            }).then(async r => {
-                if (!r.ok) {
-                    const text = await r.text();
-                    throw new Error(`Upload failed: ${r.statusText} - ${text}`);
-                }
-                return r.json();
-            }).then(data => {
-                if (!isDisposed && Array.isArray(data)) {
-                    setSubtitles(data);
-                    videoEl?.play().catch((err) => console.error("Play failed:", err));
-                }
-            }).catch(e => console.error("Upload error:", e))
-                .finally(() => {
+            const processUpload = async () => {
+                // Defer the state update to avoid synchronous cascading renders inside useEffect
+                setTimeout(() => {
+                    if (!isDisposed) setIsUploading(true);
+                }, 0);
+
+                try {
+                    const formData = new FormData();
+                    formData.append("file", config.file!);
+                    const r = await fetch("http://localhost:3001/upload", {
+                        method: "POST",
+                        body: formData
+                    });
+
+                    if (!r.ok) {
+                        const text = await r.text();
+                        throw new Error(`Upload failed: ${r.statusText} - ${text}`);
+                    }
+
+                    const data = await r.json();
+                    if (!isDisposed && Array.isArray(data)) {
+                        setSubtitles(data);
+                        videoEl?.play().catch((err) => console.error("Play failed:", err));
+                    }
+                } catch (e) {
+                    console.error("Upload error:", e);
+                } finally {
                     if (!isDisposed) setIsUploading(false);
-                });
+                }
+            };
+
+            processUpload();
         }
 
         return () => {
