@@ -43,7 +43,7 @@ async fn serve_with_listener(
         .route("/settings", get(get_settings).post(update_settings))
         .route("/upload", axum::routing::post(handle_upload))
         .with_state(state)
-        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
+        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB limit
         .layer(CorsLayer::permissive());
 
     axum::serve(listener, app).await.unwrap();
