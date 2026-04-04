@@ -111,7 +111,6 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
 
     log::info!("Hardware: {}Hz, {} channels", sample_rate, channels);
 
-
     // ── VAD state ────────────────────────────────────────────────────────────
 
     /// Exponential smoothing factor for the noise floor update.
@@ -121,7 +120,6 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     /// Speech threshold = noise_floor × SNR_RATIO.
     /// 3.0 means speech must be 3× louder than the measured ambient noise.
     const SNR_RATIO: f32 = 3.0;
-
 
     /// How long to keep streaming after speech stops (ms).
     /// Prevents clipping the tail of words and sentences.
@@ -295,7 +293,9 @@ mod tests {
     #[test]
     fn test_zcr_alternating() {
         // Fully alternating signal (+1, -1, +1, …) produces near-maximum ZCR.
-        let alternating: Vec<f32> = (0..64).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let alternating: Vec<f32> = (0..64)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
         let zcr = zero_crossing_rate(&alternating);
         // Every adjacent pair crosses → (n-1)/(n) crossings per sample
         assert!(zcr > 0.4, "Expected high ZCR, got {}", zcr);
@@ -319,7 +319,11 @@ mod tests {
             .collect();
         let zcr = zero_crossing_rate(&samples);
         // Expect roughly 2 crossings per cycle → 200 * 2 / 16000 = 0.025
-        assert!(zcr > ZCR_MIN && zcr < ZCR_MAX, "Speech ZCR out of band: {}", zcr);
+        assert!(
+            zcr > ZCR_MIN && zcr < ZCR_MAX,
+            "Speech ZCR out of band: {}",
+            zcr
+        );
     }
 
     #[test]
