@@ -26,3 +26,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 axum = { version = "0.7", features = ["ws", "multipart"] }
 tower-http = { version = "0.5", features = ["cors"] }
 webrtc-vad = "0.4"
+
+# Local STT: whisper.cpp Rust bindings (no internet required at runtime)
+whisper-rs = { version = "0.13", features = [] }

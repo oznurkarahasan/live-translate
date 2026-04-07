@@ -4,6 +4,7 @@
 mod audio;
 mod server;
 mod transcriber;
+mod whisper_stt;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 

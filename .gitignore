@@ -4,6 +4,11 @@
 **/*.rs.bk
 /backend/.env
 
+# --- Whisper GGML models (large binaries — download separately) ---
+# curl -L -o backend/models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+/backend/models/*.bin
+/backend/models/*.gguf
+
 # --- Node.js / Next.js ---
 /frontend/node_modules/
 /frontend/.next/

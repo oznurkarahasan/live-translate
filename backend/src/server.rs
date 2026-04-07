@@ -158,9 +158,13 @@ async fn handle_upload(
     let client = reqwest::Client::new();
     let dg_url = format!("https://api.deepgram.com/v1/listen?smart_format=true&utterances=true&punctuate=true&model={}&language={}", config.deepgram_model, stt_lang);
 
+    let dg_key = config.deepgram_api_key.as_deref().ok_or_else(|| {
+        (StatusCode::SERVICE_UNAVAILABLE, "DEEPGRAM_API_KEY is not configured. File upload transcription requires a Deepgram API key.".to_string())
+    })?;
+
     let mut req_builder = client.post(&dg_url).header(
         "Authorization",
-        format!("Token {}", config.deepgram_api_key),
+        format!("Token {}", dg_key),
     );
 
     if !content_type.is_empty() {
