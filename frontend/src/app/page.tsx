@@ -7,6 +7,7 @@ import TranslationView from "../components/TranslationView";
 interface TranslationUpdate {
   original: string;
   translated: string;
+  is_partial: boolean;
 }
 
 interface AppConfig {

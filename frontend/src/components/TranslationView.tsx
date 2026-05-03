@@ -12,6 +12,7 @@ interface TranslationViewProps {
     translation?: {
         original: string;
         translated: string;
+        is_partial: boolean;
     };
     onStop: () => void;
     className?: string;
@@ -110,11 +111,11 @@ export default function TranslationView({ config, translation, onStop, className
     if (config.source === "file") {
         const currentSub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         if (currentSub) {
-            activeTranslation = { original: "", translated: currentSub.text };
+            activeTranslation = { original: "", translated: currentSub.text, is_partial: false };
         } else if (isUploading) {
-            activeTranslation = { original: "", translated: "Analysing and translating video..." };
+            activeTranslation = { original: "", translated: "Analysing and translating video...", is_partial: false };
         } else {
-            activeTranslation = { original: "", translated: "\u00A0" }; // use non-breaking space to keep box height
+            activeTranslation = { original: "", translated: "\u00A0", is_partial: false };
         }
     }
 
@@ -184,20 +185,35 @@ export default function TranslationView({ config, translation, onStop, className
                         <div className="flex flex-col items-center animate-in slide-in-from-bottom-8 duration-700">
                             {/* Original Text (Subtle) */}
                             {activeTranslation.original && (
-                                <p className="text-gray-400/80 text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl">
+                                <p className={`text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl transition-colors duration-300 ${activeTranslation.is_partial ? "text-gray-500/60" : "text-gray-400/80"}`}>
                                     &quot;{activeTranslation.original}&quot;
                                 </p>
                             )}
 
                             {/* Translated Highlight */}
-                            <div className="w-full bg-gradient-to-b from-white/5 to-white/0 backdrop-blur-3xl border border-white/15 p-10 rounded-[2.5rem] shadow-2xl relative">
+                            <div className={`w-full bg-gradient-to-b backdrop-blur-3xl border p-10 rounded-[2.5rem] shadow-2xl relative transition-all duration-300 ${activeTranslation.is_partial ? "from-white/2 to-white/0 border-white/8" : "from-white/5 to-white/0 border-white/15"}`}>
                                 {/* Accent Decorations */}
-                                <div className="absolute top-0 left-12 w-16 h-[2px] bg-emerald-500/50" />
-                                <div className="absolute bottom-0 right-12 w-16 h-[2px] bg-blue-500/50" />
+                                <div className={`absolute top-0 left-12 w-16 h-[2px] transition-colors duration-300 ${activeTranslation.is_partial ? "bg-emerald-500/20" : "bg-emerald-500/50"}`} />
+                                <div className={`absolute bottom-0 right-12 w-16 h-[2px] transition-colors duration-300 ${activeTranslation.is_partial ? "bg-blue-500/20" : "bg-blue-500/50"}`} />
 
-                                <p className="text-white text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                    {activeTranslation.translated}
-                                </p>
+                                {activeTranslation.is_partial ? (
+                                    /* Partial: sadece dinleniyor animasyonu göster */
+                                    <div className="flex items-center justify-center gap-3">
+                                        <p className="text-white/40 text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
+                                            {activeTranslation.original}
+                                        </p>
+                                        <span className="flex gap-1 items-end pb-2 shrink-0">
+                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
+                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
+                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                                        </span>
+                                    </div>
+                                ) : (
+                                    /* Final: çeviriyi göster */
+                                    <p className="text-white text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
+                                        {activeTranslation.translated}
+                                    </p>
+                                )}
                             </div>
                         </div>
                     ) : (

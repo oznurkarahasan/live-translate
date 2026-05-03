@@ -17,6 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct TranslationUpdate {
     pub original: String,
     pub translated: String,
+    pub is_partial: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,6 +108,11 @@ pub async fn run_realtime_pipeline(
                     Some(Ok(Message::Text(text))) => {
                         if let Some(partial) = extract_partial_transcript(&text) {
                             log::debug!("Partial: {}", partial);
+                            let _ = tx.send(TranslationUpdate {
+                                original: partial,
+                                translated: String::new(),
+                                is_partial: true,
+                            });
                         }
 
                         if let Some(final_transcript) = extract_final_transcript(&text) {
@@ -128,6 +134,7 @@ pub async fn run_realtime_pipeline(
                                 let _ = tx.send(TranslationUpdate {
                                     original: final_transcript.clone(),
                                     translated: final_transcript,
+                                    is_partial: false,
                                 });
                                 continue;
                             }
@@ -147,6 +154,7 @@ pub async fn run_realtime_pipeline(
                                     let _ = tx.send(TranslationUpdate {
                                         original: final_transcript,
                                         translated: translated_text,
+                                        is_partial: false,
                                     });
                                 }
                                 Err(err) => log::error!("Translation failed: {}", err),
@@ -401,6 +409,7 @@ mod tests {
         let update = TranslationUpdate {
             original: "merhaba".to_string(),
             translated: "hello".to_string(),
+            is_partial: false,
         };
 
         let payload = serde_json::to_value(update).unwrap();
