@@ -72,6 +72,7 @@ npm run lint
 1. Create environment file from example:
 
 ```bash
+cd backend
 cp .env.example .env
 ```
 
