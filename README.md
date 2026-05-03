@@ -21,7 +21,7 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 - [x] Implement `audio.rs` module to detect and select default input devices.
 - [x] Capture raw PCM 16-bit audio data.
 - [x] Normalize audio to 16kHz Mono (Required by most STT APIs).
-- [ ] Integrate **VAD (Voice Activity Detection)** to stop streaming during silence.
+- [x] Integrate **VAD (Voice Activity Detection)** to stop streaming during silence.
 - [x] **Test:** Verify audio buffer levels in Docker logs.
 
 ### Phase 2: AI Processing Layer (STT & Translation)
@@ -40,9 +40,9 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 - [x] Initialize **Next.js** project in the `frontend/` directory.
 - [x] Setup WebSocket communication between Backend and Frontend.
 - [x] Create a transparent subtitle overlay component.
-- [ ] Add file upload workflow for full-file transcription/translation with synchronized subtitle display.
+- [x] Add file upload workflow for full-file transcription/translation with synchronized subtitle display.
 - [x] Implement a basic dashboard for language selection and microphone toggle.
-- [ ] **Test:** Ensure subtitles appear on the web UI with <500ms latency.
+- [x] **Test:** Ensure subtitles appear on the web UI with <500ms latency.
 
 ### Phase 4: Production & Optimization
 *Goal: Harden the system for live broadcast environments.*
@@ -59,6 +59,7 @@ docker compose run --rm backend cargo test
 # in local, backend tests
 cd backend
 cargo test
+cargo check
 cargo fmt && cargo clippy
 # frontend test
 cd frontend
@@ -71,6 +72,7 @@ npm run lint
 1. Create environment file from example:
 
 ```bash
+cd backend
 cp .env.example .env
 ```
 
@@ -88,39 +90,3 @@ cargo run
 4. Speak into your default microphone and watch terminal output:
 - `[STT] ...` for final transcript
 - `[English] ...` (or selected target language) for translation
-
-## Upcoming Development Plan (File Translation + Synced Subtitles)
-
-This section describes the planned implementation for full video-file translation with synchronized subtitle rendering.
-
-### Goal
-
-Enable users to upload a video file, process the entire file end-to-end, and display translated subtitles synchronized to playback time.
-
-### Planned Flow
-
-1. The user uploads a video file from the frontend.
-2. Backend creates a processing job (`uploaded -> transcribing -> translating -> ready -> failed`).
-3. Audio is extracted and normalized (mono/16kHz) from the file.
-4. STT runs in file/batch mode and returns timestamped transcript segments.
-5. Each segment is translated while preserving start/end timestamps.
-6. Frontend plays the video and renders subtitles based on `currentTime`.
-
-### Technical Milestones
-
-1. Add backend upload endpoint and job-status endpoint.
-2. Add file processing pipeline with progress updates.
-3. Store segment schema (`startMs`, `endMs`, `original`, `translated`).
-4. Implement frontend progress UI for long-running jobs.
-5. Implement synchronized subtitle renderer tied to video timeline.
-6. (Optional) Export subtitles as WebVTT/SRT.
-
-### MVP Order
-
-1. Upload + status APIs
-2. Timestamped transcription
-3. Segment translation
-4. Synced subtitle rendering in player
-5. Refinements (export, retries, optimization)
-
-

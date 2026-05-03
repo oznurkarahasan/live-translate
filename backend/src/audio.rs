@@ -3,10 +3,28 @@
 
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+use webrtc_vad::{Vad, VadMode};
 
 static CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// Thread-local webrtc-vad instance.
+// cpal's audio callback runs on a dedicated OS thread. By using thread_local!,
+// `Vad` (which contains a raw pointer and is !Send) never needs to cross
+// thread boundaries — it is created on first use on the callback thread.
+thread_local! {
+    static WVAD: std::cell::RefCell<Vad> = std::cell::RefCell::new({
+        let mut v = Vad::new();
+        v.set_mode(VadMode::Quality);
+        v
+    });
+}
+
+/// ZCR band that characterises speech (crossings-per-sample).
+pub const ZCR_MIN: f32 = 0.01; // below this → DC / silence / very low-freq rumble
+pub const ZCR_MAX: f32 = 0.35; // above this → impulse noise / clicks
 
 pub struct AudioCapture {
     pub rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -66,6 +84,23 @@ fn float_to_pcm16le(samples: &[f32]) -> Vec<u8> {
     pcm_bytes
 }
 
+/// Compute the Zero-Crossing Rate of a frame.
+///
+/// Returns crossings-per-sample in the range 0.0–0.5.
+/// Speech typically falls in the 0.01–0.35 band:
+///   - Very low ZCR (<0.01): near-DC signal, not speech.
+///   - Very high ZCR (>0.35): click / impulse noise, not speech.
+pub fn zero_crossing_rate(samples: &[f32]) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples
+        .windows(2)
+        .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
+        .count();
+    crossings as f32 / samples.len() as f32
+}
+
 pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let host = cpal::default_host();
     let device = host.default_input_device().context("No input device")?;
@@ -76,19 +111,138 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
 
     log::info!("Hardware: {}Hz, {} channels", sample_rate, channels);
 
+    // ── VAD state ────────────────────────────────────────────────────────────
+
+    /// Exponential smoothing factor for the noise floor update.
+    /// Close to 1.0 = slow adaptation (doesn't track speech as noise).
+    const NOISE_FLOOR_ALPHA: f32 = 0.995;
+
+    /// Speech threshold = noise_floor × SNR_RATIO.
+    /// 3.0 means speech must be 3× louder than the measured ambient noise.
+    const SNR_RATIO: f32 = 3.0;
+
+    /// How long to keep streaming after speech stops (ms).
+    /// Prevents clipping the tail of words and sentences.
+    const HANGOVER_MS: f32 = 300.0;
+
+    /// Number of pre-speech frames to buffer.
+    /// At ~20ms/frame this covers ~160 ms before speech onset,
+    /// so the attack of the first syllable is never cut off.
+    const PRE_SPEECH_FRAMES: usize = 8;
+
+    // Mutable VAD variables captured by the callback closure.
+    let mut noise_floor: f32 = 0.005; // conservative starting value
+    let mut hangover_remaining_ms: f32 = 0.0;
+    let mut pre_buffer: VecDeque<Vec<u8>> = VecDeque::with_capacity(PRE_SPEECH_FRAMES + 1);
+
     let stream = device.build_input_stream(
         &config_range.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             let resampled = process_audio_frame(data, channels, sample_rate);
-            let pcm = float_to_pcm16le(&resampled);
 
-            if let Err(err) = tx.send(pcm) {
-                log::error!("Failed to queue audio chunk: {}", err);
+            if resampled.is_empty() {
+                return;
             }
 
+            // ── Feature extraction ───────────────────────────────────────────
+            let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
+
+            let rms = (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32)
+                .sqrt();
+
+            let zcr = zero_crossing_rate(&resampled);
+
+            // ── VAD decision ─────────────────────────────────────────────────
+            //
+            // Two-stage pipeline:
+            //   Stage 1 (cheap):  RMS energy + ZCR band filter.
+            //                     Rejects obvious silence / impulse noise
+            //                     without touching the webrtc-vad API.
+            //   Stage 2 (accurate): webrtc-vad GMM algorithm on 10 ms frames.
+            //                     Only runs when Stage 1 passes.
+
+            let dynamic_threshold = noise_floor * SNR_RATIO;
+            let energy_pass = rms > dynamic_threshold && zcr > ZCR_MIN && zcr < ZCR_MAX;
+
+            // Stage 2: confirm with webrtc-vad on 10 ms windows.
+            // We convert the resampled f32 frame to i16 and split into
+            // 160-sample chunks; speech is confirmed if ANY chunk is voiced.
+            let wvad_speech = if energy_pass {
+                let i16_frame: Vec<i16> = resampled
+                    .iter()
+                    .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                    .collect();
+
+                WVAD.with(|cell| {
+                    let mut vad = cell.borrow_mut();
+                    i16_frame
+                        .chunks(160)
+                        .filter(|chunk| chunk.len() == 160)
+                        .any(|chunk| vad.is_voice_segment(chunk).unwrap_or(false))
+                })
+            } else {
+                false
+            };
+
+            let is_speech = wvad_speech;
+
+            // ── Update adaptive noise floor (only during confirmed silence) ──
+            // We skip the update while the hangover is active to prevent
+            // voiced audio from dragging the floor upward.
+            if !is_speech && hangover_remaining_ms <= 0.0 {
+                noise_floor =
+                    NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms;
+            }
+
+            // ── Hangover logic ───────────────────────────────────────────────
+            let was_silent = hangover_remaining_ms <= 0.0;
+
+            if is_speech {
+                if was_silent {
+                    // ── Speech onset: flush the pre-speech ring buffer first ─
+                    // This recovers the ~160 ms audio that preceded detection,
+                    // so the start of the utterance is not clipped.
+                    for buffered in pre_buffer.drain(..) {
+                        if let Err(err) = tx.send(buffered) {
+                            log::error!("Failed to flush pre-buffer: {}", err);
+                            return;
+                        }
+                    }
+                }
+                hangover_remaining_ms = HANGOVER_MS;
+            } else {
+                hangover_remaining_ms = (hangover_remaining_ms - frame_ms).max(0.0);
+            }
+
+            // ── Route audio ──────────────────────────────────────────────────
+            let pcm = float_to_pcm16le(&resampled);
+
+            if hangover_remaining_ms > 0.0 {
+                // Active or hanging-over: forward to transcriber
+                if let Err(err) = tx.send(pcm) {
+                    log::error!("Failed to queue audio chunk: {}", err);
+                }
+            } else {
+                // Silence: maintain the pre-speech ring buffer
+                if pre_buffer.len() >= PRE_SPEECH_FRAMES {
+                    pre_buffer.pop_front();
+                }
+                pre_buffer.push_back(pcm);
+            }
+
+            // ── Periodic diagnostic log ──────────────────────────────────────
             let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
             if count.is_multiple_of(100) {
-                log::info!("Stream Active. Processed buffer size: {}", resampled.len());
+                log::info!(
+                    "VAD | RMS: {:.4}  ZCR: {:.3}  floor: {:.4}  thr: {:.4}  energy_pass: {}  wvad: {}  hangover: {:.0}ms",
+                    rms,
+                    zcr,
+                    noise_floor,
+                    dynamic_threshold,
+                    energy_pass,
+                    wvad_speech,
+                    hangover_remaining_ms,
+                );
             }
         },
         move |err| log::error!("Stream error: {}", err),
@@ -103,7 +257,7 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     })
 }
 
-// --- UNIT TESTS ---
+// ── Unit tests ────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +280,70 @@ mod tests {
             (result[0] - 0.5).abs() < 1e-5,
             "Expected ~0.5, got {}",
             result[0]
+        );
+    }
+
+    #[test]
+    fn test_zcr_silence() {
+        // A flat zero signal has zero crossings.
+        let silence = vec![0.0f32; 64];
+        assert_eq!(zero_crossing_rate(&silence), 0.0);
+    }
+
+    #[test]
+    fn test_zcr_alternating() {
+        // Fully alternating signal (+1, -1, +1, …) produces near-maximum ZCR.
+        let alternating: Vec<f32> = (0..64)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let zcr = zero_crossing_rate(&alternating);
+        // Every adjacent pair crosses → (n-1)/(n) crossings per sample
+        assert!(zcr > 0.4, "Expected high ZCR, got {}", zcr);
+    }
+
+    #[test]
+    fn test_zcr_short_frame() {
+        // Single sample: no pairs to compare, should not panic.
+        assert_eq!(zero_crossing_rate(&[0.5]), 0.0);
+        assert_eq!(zero_crossing_rate(&[]), 0.0);
+    }
+
+    #[test]
+    fn test_zcr_speech_band() {
+        // A 200 Hz sine wave at 16 kHz should have reasonable ZCR.
+        // 200 Hz → 200 zero-crossings/sec → 200/16000 = 0.0125 per sample.
+        let sr = 16000.0f32;
+        let freq = 200.0f32;
+        let samples: Vec<f32> = (0..160)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin())
+            .collect();
+        let zcr = zero_crossing_rate(&samples);
+        // Expect roughly 2 crossings per cycle → 200 * 2 / 16000 = 0.025
+        assert!(
+            zcr > ZCR_MIN && zcr < ZCR_MAX,
+            "Speech ZCR out of band: {}",
+            zcr
+        );
+    }
+
+    #[test]
+    fn test_adaptive_noise_floor_converges() {
+        // Simulate 500 frames of background noise at RMS ~0.01
+        // and verify the floor converges toward that value.
+        let alpha = 0.995f32;
+        let true_noise_rms = 0.01f32;
+        let mut floor = 0.005f32;
+
+        for _ in 0..500 {
+            floor = alpha * floor + (1.0 - alpha) * true_noise_rms;
+        }
+
+        // After 500 updates the floor should be within 30% of the true noise
+        assert!(
+            (floor - true_noise_rms).abs() < true_noise_rms * 0.3,
+            "Noise floor did not converge: floor={:.5}, target={:.5}",
+            floor,
+            true_noise_rms
         );
     }
 }
