@@ -139,13 +139,6 @@ pub async fn run_realtime_pipeline(
                                 continue;
                             }
 
-                            // Immediately notify frontend that STT is done, translation is coming
-                            let _ = tx.send(TranslationUpdate {
-                                original: final_transcript.clone(),
-                                translated: String::new(),
-                                is_partial: false,
-                            });
-
                             let translation = translate_text(
                                 &http_client,
                                 &cfg.groq_api_key,

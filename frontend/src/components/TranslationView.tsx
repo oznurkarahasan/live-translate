@@ -18,11 +18,31 @@ interface TranslationViewProps {
     className?: string;
 }
 
+const TRANSLATION_HOLD_MS = 2500;
+
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [subtitles, setSubtitles] = useState<{ start: number; end: number; text: string }[]>([]);
     const [currentTime, setCurrentTime] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
+    const [displayedTranslation, setDisplayedTranslation] = useState(translation);
+    const lastFullTranslationAt = useRef<number>(0);
+
+    useEffect(() => {
+        if (!translation) {
+            setDisplayedTranslation(undefined);
+            return;
+        }
+        if (!translation.is_partial && translation.translated) {
+            lastFullTranslationAt.current = Date.now();
+            setDisplayedTranslation(translation);
+            return;
+        }
+        if (Date.now() - lastFullTranslationAt.current < TRANSLATION_HOLD_MS) {
+            return;
+        }
+        setDisplayedTranslation(translation);
+    }, [translation]);
 
     useEffect(() => {
         const videoEl = videoRef.current;
@@ -107,7 +127,7 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
-    let activeTranslation = translation;
+    let activeTranslation = displayedTranslation;
     if (config.source === "file") {
         const currentSub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         if (currentSub) {
@@ -206,18 +226,6 @@ export default function TranslationView({ config, translation, onStop, className
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
-                                        </span>
-                                    </div>
-                                ) : !activeTranslation.translated ? (
-                                    /* STT final geldi, çeviri bekleniyor */
-                                    <div className="flex flex-col items-center gap-4">
-                                        <p className="text-white/60 text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                            {activeTranslation.original}
-                                        </p>
-                                        <span className="flex gap-1.5 items-center">
-                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:0ms]" />
-                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:150ms]" />
-                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:300ms]" />
                                         </span>
                                     </div>
                                 ) : (
