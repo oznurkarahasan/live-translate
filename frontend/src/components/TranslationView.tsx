@@ -197,7 +197,7 @@ export default function TranslationView({ config, translation, onStop, className
                                 <div className={`absolute bottom-0 right-12 w-16 h-[2px] transition-colors duration-300 ${activeTranslation.is_partial ? "bg-blue-500/20" : "bg-blue-500/50"}`} />
 
                                 {activeTranslation.is_partial ? (
-                                    /* Partial: sadece dinleniyor animasyonu göster */
+                                    /* Partial: STT anlık metin + zıplayan noktalar */
                                     <div className="flex items-center justify-center gap-3">
                                         <p className="text-white/40 text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
                                             {activeTranslation.original}
@@ -206,6 +206,18 @@ export default function TranslationView({ config, translation, onStop, className
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
                                             <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                                        </span>
+                                    </div>
+                                ) : !activeTranslation.translated ? (
+                                    /* STT final geldi, çeviri bekleniyor */
+                                    <div className="flex flex-col items-center gap-4">
+                                        <p className="text-white/60 text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
+                                            {activeTranslation.original}
+                                        </p>
+                                        <span className="flex gap-1.5 items-center">
+                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:0ms]" />
+                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:150ms]" />
+                                            <span className="w-1.5 h-1.5 bg-blue-400/70 rounded-full animate-bounce [animation-delay:300ms]" />
                                         </span>
                                     </div>
                                 ) : (
