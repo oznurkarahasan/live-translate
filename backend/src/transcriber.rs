@@ -415,7 +415,7 @@ mod tests {
         let payload = serde_json::to_value(update).unwrap();
         assert_eq!(
             payload,
-            json!({"original": "merhaba", "translated": "hello"})
+            json!({"original": "merhaba", "translated": "hello", "is_partial": false})
         );
     }
 
