@@ -218,6 +218,7 @@ async fn handle_upload(
                 &config.groq_model,
                 &text,
                 &settings,
+                &[],
             )
             .await
             {

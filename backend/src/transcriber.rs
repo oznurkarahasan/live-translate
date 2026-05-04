@@ -75,6 +75,7 @@ pub async fn run_realtime_pipeline(
     let (mut ws_write, mut ws_read) = connect_to_deepgram(&cfg, &active_stt_language).await?;
     let http_client = Client::new();
     let mut last_final = String::new();
+    let mut translation_context: Vec<String> = Vec::new();
 
     log::info!(
         "Phase 2 pipeline active: streaming to Deepgram + Groq translation (STT language: {})",
@@ -145,11 +146,17 @@ pub async fn run_realtime_pipeline(
                                 &cfg.groq_model,
                                 &final_transcript,
                                 &language_selection,
+                                &translation_context,
                             ).await;
 
                             match translation {
                                 Ok(translated_text) => {
                                     println!("[{}] {}", language_selection.target_language, translated_text);
+
+                                    translation_context.push(final_transcript.clone());
+                                    if translation_context.len() > 3 {
+                                        translation_context.remove(0);
+                                    }
 
                                     let _ = tx.send(TranslationUpdate {
                                         original: final_transcript,
@@ -319,11 +326,22 @@ pub async fn translate_text(
     groq_model: &str,
     text: &str,
     language_selection: &LanguageSelection,
+    context: &[String],
 ) -> anyhow::Result<String> {
+    let context_block = if context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nFor consistency, here are the preceding sentences already translated:\n{}",
+            context.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")
+        )
+    };
+
     let prompt = format!(
-        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.",
+        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.{}",
         language_selection.spoken_language,
-        language_selection.target_language
+        language_selection.target_language,
+        context_block,
     );
 
     let body = serde_json::json!({
