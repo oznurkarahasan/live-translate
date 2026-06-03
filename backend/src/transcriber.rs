@@ -333,7 +333,11 @@ pub async fn translate_text(
     } else {
         format!(
             "\n\nFor consistency, here are the preceding sentences already translated:\n{}",
-            context.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")
+            context
+                .iter()
+                .map(|s| format!("- {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         )
     };
 
