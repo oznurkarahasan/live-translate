@@ -52,6 +52,18 @@ The system is built with a **Modular Monolith** approach, optimized for high-per
 - [ ] Finalize CI/CD pipelines for automated testing.
 - [ ] **Final Goal:** Achieve end-to-end latency of **<800ms**.
 
+### Phase 5: Desktop Application
+*Goal: Ship a native desktop experience — always available, always translating.*
+
+- [ ] Wrap the frontend in **Tauri** (Rust-native shell, ~5MB binary vs ~100MB Electron).
+- [ ] Bundle the Rust backend as a **Tauri sidecar** so one double-click starts everything.
+- [ ] Add a **system tray icon** — app lives in the background, zero dock clutter.
+- [ ] Implement a **global hotkey** to toggle the translation overlay from any application.
+- [ ] Support **auto-start on login** so the app is always ready without manual launch.
+- [ ] Add a **context window to translation** — pass the previous 2-3 sentences to Groq for pronoun and terminology consistency across sentences.
+- [ ] Expand language support beyond English/Turkish in `resolve_deepgram_language`.
+- [ ] **Stretch:** Transparent always-on-top overlay window for use alongside video calls (Zoom, Meet, Teams).
+
 ## Tests
 
 ```bash
