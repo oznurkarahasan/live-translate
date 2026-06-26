@@ -1,6 +1,12 @@
 // Copyright 2026 live-translate
 // Licensed under the Apache License, Version 2.0
 
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+compile_error!(
+    "System audio loopback is only supported on Windows (WASAPI) and Linux \
+     (PulseAudio/PipeWire). macOS is not supported."
+);
+
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
@@ -103,8 +109,104 @@ pub fn zero_crossing_rate(samples: &[f32]) -> f32 {
 
 pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let host = cpal::default_host();
-    let device = host.default_input_device().context("No input device")?;
-    let config_range = device.default_input_config()?;
+
+    // Windows: WASAPI loopback — build_input_stream on the default render device.
+    // cpal's WASAPI backend detects eRender data flow and sets AUDCLNT_STREAMFLAGS_LOOPBACK.
+    #[cfg(target_os = "windows")]
+    let (device, config_range) = {
+        let device = host
+            .default_output_device()
+            .context("No default output device for WASAPI loopback")?;
+        let config = device
+            .default_output_config()
+            .context("Failed to query WASAPI output device config")?;
+        log::info!(
+            "Windows WASAPI loopback: capturing from '{}'",
+            device.name().unwrap_or_else(|_| "unknown".into())
+        );
+        (device, config)
+    };
+
+    // Linux device selection priority:
+    //   1. LIVE_TRANSLATE_CHOSEN_DEVICE env var — exact substring match against device name.
+    //   2. Auto-detect: first device whose name contains "monitor", then "pulse", then "default".
+    //   3. host.default_input_device() as a last resort (logs a warning).
+    //
+    // Set LIVE_TRANSLATE_CHOSEN_DEVICE=pulse in .env to pin a specific device.
+    #[cfg(target_os = "linux")]
+    let (device, config_range) = {
+        let all_inputs: Vec<cpal::Device> = host
+            .input_devices()
+            .context("Failed to enumerate input devices")?
+            .collect();
+
+        log::info!("Discovered {} input device(s):", all_inputs.len());
+        for d in &all_inputs {
+            log::info!("  - {}", d.name().unwrap_or_else(|_| "<unnamed>".into()));
+        }
+
+        // Build a helper that matches a device name against a needle (case-insensitive contains).
+        let matches = |d: &cpal::Device, needle: &str| {
+            d.name()
+                .map(|n| n.to_lowercase().contains(&needle.to_lowercase()))
+                .unwrap_or(false)
+        };
+
+        let chosen_device_name = std::env::var("LIVE_TRANSLATE_CHOSEN_DEVICE").ok();
+
+        let selected: cpal::Device = if let Some(ref name) = chosen_device_name {
+            // Priority 1: explicit env var override.
+            match all_inputs.into_iter().find(|d| matches(d, name)) {
+                Some(d) => {
+                    log::info!(
+                        "Linux: using LIVE_TRANSLATE_CHOSEN_DEVICE-selected device '{}'",
+                        d.name().unwrap_or_else(|_| "unknown".into())
+                    );
+                    d
+                }
+                None => {
+                    anyhow::bail!(
+                        "LIVE_TRANSLATE_CHOSEN_DEVICE=\"{}\" set but no matching input device found. \
+                         Check the device list above.",
+                        name
+                    );
+                }
+            }
+        } else {
+            // Priority 2: auto-detect — monitor → pulse → default name → system default.
+            let candidates = ["monitor", "pulse", "default"];
+            let auto = candidates
+                .iter()
+                .find_map(|&needle| all_inputs.iter().find(|d| matches(d, needle)));
+
+            match auto {
+                Some(d) => {
+                    log::info!(
+                        "Linux loopback: auto-selected device '{}'",
+                        d.name().unwrap_or_else(|_| "unknown".into())
+                    );
+                    // `d` is a &cpal::Device borrowed from all_inputs; re-find by name to take ownership.
+                    let name = d.name().unwrap_or_default();
+                    all_inputs.into_iter().find(|d| matches(d, &name)).unwrap()
+                }
+                None => {
+                    log::warn!(
+                        "No monitor/pulse/default device found — falling back to system default input. \
+                         System audio loopback may NOT be captured. \
+                         Set LIVE_TRANSLATE_CHOSEN_DEVICE=<name> in .env to pin a device."
+                    );
+                    host.default_input_device()
+                        .context("No default input device available")?
+                }
+            }
+        };
+
+        let config = selected
+            .default_input_config()
+            .context("Failed to query input device config")?;
+        (selected, config)
+    };
+
     let sample_rate = config_range.sample_rate().0;
     let channels = config_range.channels();
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -117,13 +219,27 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     /// Close to 1.0 = slow adaptation (doesn't track speech as noise).
     const NOISE_FLOOR_ALPHA: f32 = 0.995;
 
+    /// Hard lower bound on the adaptive noise floor.
+    ///
+    /// Without this clamp, an extended period of absolute silence (muted mic,
+    /// no hardware audio) causes noise_floor → 0 via repeated exponential decay.
+    /// Once the floor reaches ~0, dynamic_threshold = noise_floor × SNR_RATIO ≈ 0,
+    /// and any ambient noise (fan, traffic) passes Stage 1 — triggering continuous
+    /// false-positive speech detection and non-stop Deepgram audio streaming.
+    /// A floor of 0.001 keeps the threshold above the background noise floor of a
+    /// typical laptop mic in a quiet room (~0.0005–0.002 RMS).
+    const NOISE_FLOOR_MIN: f32 = 0.001;
+
     /// Speech threshold = noise_floor × SNR_RATIO.
     /// 3.0 means speech must be 3× louder than the measured ambient noise.
     const SNR_RATIO: f32 = 3.0;
 
     /// How long to keep streaming after speech stops (ms).
-    /// Prevents clipping the tail of words and sentences.
-    const HANGOVER_MS: f32 = 300.0;
+    /// Bridges natural breath pauses so a full sentence reaches Deepgram before
+    /// the stream is cut. 300 ms was too short — mid-sentence breaths triggered
+    /// premature utterance finalization. 900 ms comfortably covers a breath pause
+    /// (~200–400 ms) plus the Deepgram is_final propagation delay (~100–200 ms).
+    const HANGOVER_MS: f32 = 900.0;
 
     /// Number of pre-speech frames to buffer.
     /// At ~20ms/frame this covers ~160 ms before speech onset,
@@ -135,105 +251,116 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let mut hangover_remaining_ms: f32 = 0.0;
     let mut pre_buffer: VecDeque<Vec<u8>> = VecDeque::with_capacity(PRE_SPEECH_FRAMES + 1);
 
-    let stream = device.build_input_stream(
-        &config_range.into(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let resampled = process_audio_frame(data, channels, sample_rate);
+    // Read the device's native format before consuming config_range.
+    // This drives the format-dispatch below so ALSA is never asked to use a
+    // sample format it doesn't support (e.g. F32 on hw: devices).
+    let sample_format = config_range.sample_format();
+    let stream_config: cpal::StreamConfig = config_range.into();
 
-            if resampled.is_empty() {
-                return;
-            }
+    type VadCallback = Box<dyn FnMut(&[f32]) + Send + 'static>;
 
-            // ── Feature extraction ───────────────────────────────────────────
-            let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
+    log::info!("Device native sample format: {:?}", sample_format);
 
-            let rms = (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32)
-                .sqrt();
+    // The entire VAD pipeline lives inside one Box<dyn FnMut(&[f32])> so that
+    // mutable state (noise_floor, hangover, pre_buffer) is created exactly once.
+    // Option::take() transfers ownership into whichever format arm actually runs;
+    // the other arms compile but are never reached at runtime.
+    let mut vad_cb: Option<VadCallback> = Some(Box::new(move |data: &[f32]| {
+        let resampled = process_audio_frame(data, channels, sample_rate);
 
-            let zcr = zero_crossing_rate(&resampled);
+        if resampled.is_empty() {
+            return;
+        }
 
-            // ── VAD decision ─────────────────────────────────────────────────
-            //
-            // Two-stage pipeline:
-            //   Stage 1 (cheap):  RMS energy + ZCR band filter.
-            //                     Rejects obvious silence / impulse noise
-            //                     without touching the webrtc-vad API.
-            //   Stage 2 (accurate): webrtc-vad GMM algorithm on 10 ms frames.
-            //                     Only runs when Stage 1 passes.
+        // ── Feature extraction ───────────────────────────────────────────
+        let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
 
-            let dynamic_threshold = noise_floor * SNR_RATIO;
-            let energy_pass = rms > dynamic_threshold && zcr > ZCR_MIN && zcr < ZCR_MAX;
+        let rms = (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32).sqrt();
 
-            // Stage 2: confirm with webrtc-vad on 10 ms windows.
-            // We convert the resampled f32 frame to i16 and split into
-            // 160-sample chunks; speech is confirmed if ANY chunk is voiced.
-            let wvad_speech = if energy_pass {
-                let i16_frame: Vec<i16> = resampled
-                    .iter()
-                    .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-                    .collect();
+        let zcr = zero_crossing_rate(&resampled);
 
-                WVAD.with(|cell| {
-                    let mut vad = cell.borrow_mut();
-                    i16_frame
-                        .chunks(160)
-                        .filter(|chunk| chunk.len() == 160)
-                        .any(|chunk| vad.is_voice_segment(chunk).unwrap_or(false))
-                })
-            } else {
-                false
-            };
+        // ── VAD decision ─────────────────────────────────────────────────
+        //
+        // Two-stage pipeline:
+        //   Stage 1 (cheap):  RMS energy + ZCR band filter.
+        //                     Rejects obvious silence / impulse noise
+        //                     without touching the webrtc-vad API.
+        //   Stage 2 (accurate): webrtc-vad GMM algorithm on 10 ms frames.
+        //                     Only runs when Stage 1 passes.
 
-            let is_speech = wvad_speech;
+        let dynamic_threshold = noise_floor * SNR_RATIO;
+        let energy_pass = rms > dynamic_threshold && zcr > ZCR_MIN && zcr < ZCR_MAX;
 
-            // ── Update adaptive noise floor (only during confirmed silence) ──
-            // We skip the update while the hangover is active to prevent
-            // voiced audio from dragging the floor upward.
-            if !is_speech && hangover_remaining_ms <= 0.0 {
-                noise_floor =
-                    NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms;
-            }
+        // Stage 2: confirm with webrtc-vad on 10 ms windows.
+        // We convert the resampled f32 frame to i16 and split into
+        // 160-sample chunks; speech is confirmed if ANY chunk is voiced.
+        let wvad_speech = if energy_pass {
+            let i16_frame: Vec<i16> = resampled
+                .iter()
+                .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                .collect();
 
-            // ── Hangover logic ───────────────────────────────────────────────
-            let was_silent = hangover_remaining_ms <= 0.0;
+            WVAD.with(|cell| {
+                let mut vad = cell.borrow_mut();
+                i16_frame
+                    .chunks(160)
+                    .filter(|chunk| chunk.len() == 160)
+                    .any(|chunk| vad.is_voice_segment(chunk).unwrap_or(false))
+            })
+        } else {
+            false
+        };
 
-            if is_speech {
-                if was_silent {
-                    // ── Speech onset: flush the pre-speech ring buffer first ─
-                    // This recovers the ~160 ms audio that preceded detection,
-                    // so the start of the utterance is not clipped.
-                    for buffered in pre_buffer.drain(..) {
-                        if let Err(err) = tx.send(buffered) {
-                            log::error!("Failed to flush pre-buffer: {}", err);
-                            return;
-                        }
+        let is_speech = wvad_speech;
+
+        // ── Update adaptive noise floor (only during confirmed silence) ──
+        // We skip the update while the hangover is active to prevent
+        // voiced audio from dragging the floor upward.
+        if !is_speech && hangover_remaining_ms <= 0.0 {
+            noise_floor = (NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms)
+                .max(NOISE_FLOOR_MIN);
+        }
+
+        // ── Hangover logic ───────────────────────────────────────────────
+        let was_silent = hangover_remaining_ms <= 0.0;
+
+        if is_speech {
+            if was_silent {
+                // ── Speech onset: flush the pre-speech ring buffer first ─
+                // This recovers the ~160 ms audio that preceded detection,
+                // so the start of the utterance is not clipped.
+                for buffered in pre_buffer.drain(..) {
+                    if let Err(err) = tx.send(buffered) {
+                        log::error!("Failed to flush pre-buffer: {}", err);
+                        return;
                     }
                 }
-                hangover_remaining_ms = HANGOVER_MS;
-            } else {
-                hangover_remaining_ms = (hangover_remaining_ms - frame_ms).max(0.0);
             }
+            hangover_remaining_ms = HANGOVER_MS;
+        } else {
+            hangover_remaining_ms = (hangover_remaining_ms - frame_ms).max(0.0);
+        }
 
-            // ── Route audio ──────────────────────────────────────────────────
-            let pcm = float_to_pcm16le(&resampled);
+        // ── Route audio ──────────────────────────────────────────────────
+        let pcm = float_to_pcm16le(&resampled);
 
-            if hangover_remaining_ms > 0.0 {
-                // Active or hanging-over: forward to transcriber
-                if let Err(err) = tx.send(pcm) {
-                    log::error!("Failed to queue audio chunk: {}", err);
-                }
-            } else {
-                // Silence: maintain the pre-speech ring buffer
-                if pre_buffer.len() >= PRE_SPEECH_FRAMES {
-                    pre_buffer.pop_front();
-                }
-                pre_buffer.push_back(pcm);
+        if hangover_remaining_ms > 0.0 {
+            // Active or hanging-over: forward to transcriber
+            if let Err(err) = tx.send(pcm) {
+                log::error!("Failed to queue audio chunk: {}", err);
             }
+        } else {
+            // Silence: maintain the pre-speech ring buffer
+            if pre_buffer.len() >= PRE_SPEECH_FRAMES {
+                pre_buffer.pop_front();
+            }
+            pre_buffer.push_back(pcm);
+        }
 
-            // ── Periodic diagnostic log ──────────────────────────────────────
-            let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-            if count.is_multiple_of(100) {
-                log::info!(
+        // ── Periodic diagnostic log ──────────────────────────────────────
+        let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count.is_multiple_of(100) {
+            log::info!(
                     "VAD | RMS: {:.4}  ZCR: {:.3}  floor: {:.4}  thr: {:.4}  energy_pass: {}  wvad: {}  hangover: {:.0}ms",
                     rms,
                     zcr,
@@ -243,11 +370,55 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
                     wvad_speech,
                     hangover_remaining_ms,
                 );
-            }
-        },
-        move |err| log::error!("Stream error: {}", err),
-        None,
-    )?;
+        }
+    }));
+
+    // Build a stream using the device's native sample format.
+    // Non-f32 formats are converted with simple arithmetic before entering the
+    // pipeline — no ALSA format coercion, no Invalid argument (22) crash.
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| cb(data),
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        cpal::SampleFormat::I16 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    // Map signed 16-bit integers to [-1.0, 1.0].
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    cb(&floats)
+                },
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        cpal::SampleFormat::U16 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    // Shift unsigned 16-bit integers to signed range, then normalize to [-1.0, 1.0].
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| (s as f32 / 32_768.0) - 1.0).collect();
+                    cb(&floats)
+                },
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        fmt => anyhow::bail!(
+            "Unsupported device sample format {:?}. Expected F32, I16, or U16.",
+            fmt
+        ),
+    };
 
     stream.play()?;
 

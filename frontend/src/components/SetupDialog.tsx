@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 interface SetupDialogProps {
     onStart: (config: {
@@ -19,25 +19,6 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
     const [targetLanguage, setTargetLanguage] = useState("");
     const [source, setSource] = useState<"camera" | "file" | "none" | null>(null);
     const [file, setFile] = useState<File | null>(null);
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [progress, setProgress] = useState(0);
-
-    // Handle Processing Simulation
-    useEffect(() => {
-        if (isProcessing) {
-            const interval = setInterval(() => {
-                setProgress((prev) => {
-                    if (prev >= 100) {
-                        clearInterval(interval);
-                        setIsProcessing(false);
-                        return 100;
-                    }
-                    return prev + 5;
-                });
-            }, 100);
-            return () => clearInterval(interval);
-        }
-    }, [isProcessing]);
 
     const handleSourceSelect = (src: "camera" | "file" | "none") => {
         setSource(src);
@@ -48,17 +29,13 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = e.target.files?.[0];
-        if (selectedFile) {
-            setFile(selectedFile);
-            setIsProcessing(true);
-            setProgress(0);
-        }
+        if (selectedFile) setFile(selectedFile);
     };
 
     const isReady =
         spokenLanguage &&
         targetLanguage &&
-        ((source === "camera") || (source === "none") || (source === "file" && file && !isProcessing));
+        ((source === "camera") || (source === "none") || (source === "file" && !!file));
 
     return (
         <div className={`p-8 bg-black/40 backdrop-blur-xl border border-white/20 rounded-3xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-500 overflow-hidden relative ${className}`}>
@@ -174,7 +151,7 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                         </label>
                     ) : (
                         <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
-                            <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <div className="p-2 bg-purple-500/20 rounded-lg">
                                         <svg className="w-4 h-4 text-purple-400" fill="currentColor" viewBox="0 0 20 20">
@@ -183,25 +160,12 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                                     </div>
                                     <span className="text-sm text-gray-200 truncate max-w-[150px]">{file.name}</span>
                                 </div>
-                                {isProcessing ? (
-                                    <span className="text-[10px] text-emerald-400 animate-pulse font-bold uppercase">Processing...</span>
-                                ) : (
-                                    <button onClick={() => setFile(null)} className="text-gray-500 hover:text-white transition-colors">
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l18 18" />
-                                        </svg>
-                                    </button>
-                                )}
+                                <button onClick={() => setFile(null)} className="text-gray-500 hover:text-white transition-colors">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
                             </div>
-
-                            {isProcessing && (
-                                <div className="w-full bg-white/10 rounded-full h-1.5 mt-2">
-                                    <div
-                                        className="bg-emerald-500 h-1.5 rounded-full transition-all duration-300"
-                                        style={{ width: `${progress}%` }}
-                                    />
-                                </div>
-                            )}
                         </div>
                     )}
                 </div>
