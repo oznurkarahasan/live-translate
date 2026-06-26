@@ -87,6 +87,7 @@ async function startCameraSession() {
 // ---------------------------------------------------------------------------
 describe("Subtitle render latency", () => {
     beforeEach(() => {
+        localStorage.clear(); // prevent a saved config from a previous test bypassing SetupDialog
         MockWebSocket.instances = [];
         vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
         vi.stubGlobal("navigator", {

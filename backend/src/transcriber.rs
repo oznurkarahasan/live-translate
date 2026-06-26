@@ -26,6 +26,7 @@ pub struct LanguageSelection {
     pub target_language: String,
 }
 
+#[derive(Clone)]
 pub struct Phase2Config {
     pub deepgram_api_key: String,
     pub groq_api_key: String,
@@ -72,145 +73,193 @@ pub async fn run_realtime_pipeline(
     let initial_spoken_language = settings_rx.borrow().spoken_language.clone();
     let mut active_stt_language =
         resolve_deepgram_language(&initial_spoken_language, &cfg.deepgram_language);
-    let (mut ws_write, mut ws_read) = connect_to_deepgram(&cfg, &active_stt_language).await?;
     let http_client = Client::new();
     let mut last_final = String::new();
+    // Sliding context window: last N (original, translated) pairs sent to Groq.
+    // 5 pairs = 10 extra messages per request; at ~40 tokens/pair ≈ 400 context tokens.
+    // Larger window improves pronoun/terminology consistency; smaller reduces API latency.
+    const CONTEXT_WINDOW: usize = 5;
+    let mut translation_context: Vec<(String, String)> = Vec::with_capacity(CONTEXT_WINDOW);
+    let mut backoff_secs: u64 = 1;
 
-    log::info!(
-        "Phase 2 pipeline active: streaming to Deepgram + Groq translation (STT language: {})",
-        active_stt_language
-    );
+    'reconnect: loop {
+        let (mut ws_write, mut ws_read) = match connect_to_deepgram(&cfg, &active_stt_language)
+            .await
+        {
+            Ok(ws) => {
+                log::info!(
+                    "Phase 2 pipeline active: streaming to Deepgram + Groq translation (STT language: {})",
+                    active_stt_language
+                );
+                backoff_secs = 1;
+                ws
+            }
+            Err(err) => {
+                log::warn!(
+                    "Deepgram connect failed ({}); retrying in {}s",
+                    err,
+                    backoff_secs
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(30);
+                continue 'reconnect;
+            }
+        };
 
-    loop {
-        tokio::select! {
-            maybe_chunk = tokio::time::timeout(std::time::Duration::from_secs(8), audio_rx.recv()) => {
-                match maybe_chunk {
-                    Ok(Some(chunk)) => {
-                        ws_write
-                            .send(Message::Binary(chunk))
-                            .await
-                            .context("Failed sending audio chunk to Deepgram")?;
-                    }
-                    Ok(None) => {
-                        ws_write.send(Message::Close(None)).await.ok();
-                        break;
-                    }
-                    Err(_) => {
-                        // VAD dropped silent chunks. Deepgram requires streaming or KeepAlives to stay connected.
-                        log::debug!("VAD is active (silence detected). Sending KeepAlive to Deepgram.");
-                        // Keep connection alive without incurring extra compute for audio parsing
-                        ws_write.send(Message::Text(r#"{"type": "KeepAlive"}"#.into())).await.ok();
+        loop {
+            tokio::select! {
+                maybe_chunk = tokio::time::timeout(std::time::Duration::from_secs(8), audio_rx.recv()) => {
+                    match maybe_chunk {
+                        Ok(Some(chunk)) => {
+                            if ws_write.send(Message::Binary(chunk)).await.is_err() {
+                                log::warn!("Failed to send audio chunk to Deepgram; reconnecting");
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            ws_write.send(Message::Close(None)).await.ok();
+                            return Ok(());
+                        }
+                        Err(_) => {
+                            // VAD dropped silent chunks. Deepgram requires streaming or KeepAlives to stay connected.
+                            log::debug!("VAD is active (silence detected). Sending KeepAlive to Deepgram.");
+                            // Keep connection alive without incurring extra compute for audio parsing
+                            ws_write.send(Message::Text(r#"{"type": "KeepAlive"}"#.into())).await.ok();
+                        }
                     }
                 }
-            }
-            maybe_message = ws_read.next() => {
-                match maybe_message {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Some(partial) = extract_partial_transcript(&text) {
-                            log::debug!("Partial: {}", partial);
-                            let _ = tx.send(TranslationUpdate {
-                                original: partial,
-                                translated: String::new(),
-                                is_partial: true,
-                            });
-                        }
-
-                        if let Some(final_transcript) = extract_final_transcript(&text) {
-                            if final_transcript == last_final {
-                                continue;
-                            }
-
-                            last_final = final_transcript.clone();
-                            println!("[STT] {}", final_transcript);
-
-                            let language_selection = settings_rx.borrow().clone();
-
-                            if is_same_language_pair(&language_selection) {
-                                println!(
-                                    "[{}] {}",
-                                    language_selection.target_language, final_transcript
-                                );
-
+                maybe_message = ws_read.next() => {
+                    match maybe_message {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Some(partial) = extract_partial_transcript(&text) {
+                                log::debug!("Partial: {}", partial);
                                 let _ = tx.send(TranslationUpdate {
-                                    original: final_transcript.clone(),
-                                    translated: final_transcript,
-                                    is_partial: false,
+                                    original: partial,
+                                    translated: String::new(),
+                                    is_partial: true,
                                 });
-                                continue;
                             }
 
-                            let translation = translate_text(
-                                &http_client,
-                                &cfg.groq_api_key,
-                                &cfg.groq_model,
-                                &final_transcript,
-                                &language_selection,
-                            ).await;
+                            if let Some(final_transcript) = extract_final_transcript(&text) {
+                                if is_duplicate_transcript(&final_transcript, &last_final) {
+                                    log::debug!("Skipping duplicate transcript: {:?}", final_transcript);
+                                    continue;
+                                }
 
-                            match translation {
-                                Ok(translated_text) => {
-                                    println!("[{}] {}", language_selection.target_language, translated_text);
+                                last_final = final_transcript.clone();
+                                println!("[STT] {}", final_transcript);
+
+                                let language_selection = settings_rx.borrow().clone();
+
+                                if is_same_language_pair(&language_selection) {
+                                    println!(
+                                        "[{}] {}",
+                                        language_selection.target_language, final_transcript
+                                    );
 
                                     let _ = tx.send(TranslationUpdate {
-                                        original: final_transcript,
-                                        translated: translated_text,
+                                        original: final_transcript.clone(),
+                                        translated: final_transcript,
                                         is_partial: false,
                                     });
+                                    continue;
                                 }
-                                Err(err) => log::error!("Translation failed: {}", err),
+
+                                let translation = translate_text(
+                                    &http_client,
+                                    &cfg.groq_api_key,
+                                    &cfg.groq_model,
+                                    &final_transcript,
+                                    &language_selection,
+                                    &translation_context,
+                                ).await;
+
+                                match translation {
+                                    Ok(translated_text) => {
+                                        println!("[{}] {}", language_selection.target_language, translated_text);
+
+                                        // Trim before push so the Vec never exceeds CONTEXT_WINDOW.
+                                        // remove(0) is O(n) but n ≤ CONTEXT_WINDOW which is tiny.
+                                        if translation_context.len() >= CONTEXT_WINDOW {
+                                            translation_context.remove(0);
+                                        }
+                                        translation_context.push((final_transcript.clone(), translated_text.clone()));
+
+                                        let _ = tx.send(TranslationUpdate {
+                                            original: final_transcript,
+                                            translated: translated_text,
+                                            is_partial: false,
+                                        });
+                                    }
+                                    Err(err) => log::error!("Translation failed: {}", err),
+                                }
                             }
                         }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        ws_write.send(Message::Pong(payload)).await.ok();
-                    }
-                    Some(Ok(Message::Close(frame))) => {
-                        log::info!("Deepgram websocket closed: {:?}", frame);
-                        break;
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(err)) => {
-                        return Err(anyhow!("Deepgram websocket error: {}", err));
-                    }
-                    None => {
-                        log::warn!("Deepgram websocket stream ended");
-                        break;
+                        Some(Ok(Message::Ping(payload))) => {
+                            ws_write.send(Message::Pong(payload)).await.ok();
+                        }
+                        Some(Ok(Message::Close(frame))) => {
+                            log::info!("Deepgram websocket closed: {:?}", frame);
+                            break;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(err)) => {
+                            log::warn!("Deepgram websocket error: {}; reconnecting", err);
+                            break;
+                        }
+                        None => {
+                            log::warn!("Deepgram websocket stream ended; reconnecting");
+                            break;
+                        }
                     }
                 }
-            }
-            changed = settings_rx.changed() => {
-                if changed.is_err() {
-                    log::warn!("Language settings channel closed");
-                    continue;
+                changed = settings_rx.changed() => {
+                    if changed.is_err() {
+                        log::warn!("Language settings channel closed");
+                        continue;
+                    }
+
+                    let new_spoken_language = settings_rx.borrow().spoken_language.clone();
+                    let new_stt_language = resolve_deepgram_language(
+                        &new_spoken_language,
+                        &cfg.deepgram_language,
+                    );
+
+                    if new_stt_language == active_stt_language {
+                        continue;
+                    }
+
+                    log::info!(
+                        "Spoken language changed to '{}'; reconnecting Deepgram with language '{}'",
+                        new_spoken_language,
+                        new_stt_language
+                    );
+
+                    ws_write.send(Message::Close(None)).await.ok();
+                    active_stt_language = new_stt_language;
+                    last_final.clear();
+                    match connect_to_deepgram(&cfg, &active_stt_language).await {
+                        Ok((new_write, new_read)) => {
+                            ws_write = new_write;
+                            ws_read = new_read;
+                            backoff_secs = 1;
+                        }
+                        Err(err) => {
+                            log::warn!("Language-change reconnect failed ({}); will retry", err);
+                            break;
+                        }
+                    }
                 }
-
-                let new_spoken_language = settings_rx.borrow().spoken_language.clone();
-                let new_stt_language = resolve_deepgram_language(
-                    &new_spoken_language,
-                    &cfg.deepgram_language,
-                );
-
-                if new_stt_language == active_stt_language {
-                    continue;
-                }
-
-                log::info!(
-                    "Spoken language changed to '{}'; reconnecting Deepgram with language '{}'",
-                    new_spoken_language,
-                    new_stt_language
-                );
-
-                ws_write.send(Message::Close(None)).await.ok();
-                let (new_ws_write, new_ws_read) = connect_to_deepgram(&cfg, &new_stt_language).await?;
-                ws_write = new_ws_write;
-                ws_read = new_ws_read;
-                active_stt_language = new_stt_language;
-                last_final.clear();
             }
         }
-    }
 
-    Ok(())
+        log::warn!(
+            "Deepgram connection dropped; reconnecting in {}s",
+            backoff_secs
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+        backoff_secs = (backoff_secs * 2).min(30);
+    }
 }
 
 pub fn resolve_deepgram_language(spoken_language: &str, fallback_language: &str) -> String {
@@ -255,6 +304,25 @@ async fn connect_to_deepgram(
         .context("Failed to connect to Deepgram realtime websocket")?;
 
     Ok(websocket.split())
+}
+
+/// Returns true when two transcripts represent the same utterance.
+///
+/// Deepgram can emit the same spoken text with subtle differences between
+/// successive `is_final` events (e.g. "hello world" vs "Hello world." — the
+/// second fires when our VAD hangover audio finally drains through). Exact
+/// string equality misses these near-duplicates; normalising before comparison
+/// catches them without any false positives for genuinely different sentences.
+fn is_duplicate_transcript(new: &str, last: &str) -> bool {
+    if last.is_empty() {
+        return false;
+    }
+    let normalize = |s: &str| {
+        s.trim()
+            .trim_end_matches(['.', ',', '!', '?', ';', ':'])
+            .to_lowercase()
+    };
+    normalize(new) == normalize(last)
 }
 
 fn extract_partial_transcript(text: &str) -> Option<String> {
@@ -319,27 +387,67 @@ pub async fn translate_text(
     groq_model: &str,
     text: &str,
     language_selection: &LanguageSelection,
+    context: &[(String, String)], // (original_chunk, translated_chunk) pairs
 ) -> anyhow::Result<String> {
+    // The system prompt establishes the interpreter role and continuation contract.
+    // It intentionally contains NO inline history — that lives in the conversation
+    // turns below so the model treats it as genuine prior context, not a summary.
     let prompt = format!(
-        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.",
-        language_selection.spoken_language,
-        language_selection.target_language
+        "You are a professional Simultaneous Interpreter.\n\
+         Source language: {source}. Target language: {target}.\n\
+         \n\
+         You will receive a sequence of conversation turns:\n\
+         - Each [user] message is a spoken audio chunk in {source}.\n\
+         - Each [assistant] message is its {target} translation.\n\
+         \n\
+         ## Rules\n\
+         1. Translate ONLY the final [user] message.\n\
+         2. DO NOT repeat any part of a previous [assistant] turn — continue the \
+            narrative smoothly, as a simultaneous interpreter would.\n\
+         3. If the new chunk adds no semantic value beyond what is already translated, \
+            output nothing at all.\n\
+         4. Apply rules 2-3 regardless of source/target syntactic order \
+            (SOV, SVO, VSO, etc.): identify meaning, not surface tokens.\n\
+         5. Preserve proper nouns, technical terms, and named entities as-is unless a \
+            standard {target} equivalent exists.\n\
+         6. Output ONLY the translation — no explanations, notes, or quotes.",
+        source = language_selection.spoken_language,
+        target = language_selection.target_language,
     );
+
+    // Build the multi-turn message array:
+    //   system
+    //   [user: original_1, assistant: translated_1]  ← history pairs
+    //   ...
+    //   user: current_chunk                          ← what to translate now
+    let mut messages: Vec<serde_json::Value> = Vec::with_capacity(1 + context.len() * 2 + 1);
+    messages.push(serde_json::json!({"role": "system", "content": prompt}));
+
+    for (original, translated) in context {
+        messages.push(serde_json::json!({"role": "user",      "content": original}));
+        messages.push(serde_json::json!({"role": "assistant", "content": translated}));
+    }
+
+    // Suffix reminder on every final user message prevents language bleed — the
+    // model drifting from the target language back into the source language after
+    // several turns of context.  The directive is appended rather than prepended
+    // so it fires closest to the generation boundary (highest recency weight).
+    let user_content = format!(
+        "{}\n\n[Translate the above to {} ONLY. DO NOT output the source language.]",
+        text, language_selection.target_language,
+    );
+    messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
     let body = serde_json::json!({
         "model": groq_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": prompt
-            },
-            {
-                "role": "user",
-                "content": text
-            }
-        ],
+        "messages": messages,
         "temperature": 0.0
     });
+
+    log::debug!(
+        "[Groq payload]\n{}",
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "<serialization error>".into())
+    );
 
     let response = client
         .post("https://api.groq.com/openai/v1/chat/completions")

@@ -1,7 +1,7 @@
 // Copyright 2026 live-translate
 // Licensed under the Apache License, Version 2.0
 
-use crate::transcriber::{LanguageSelection, TranslationUpdate};
+use crate::transcriber::{LanguageSelection, Phase2Config, TranslationUpdate};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
@@ -10,6 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tower_http::cors::CorsLayer;
 
@@ -17,33 +18,40 @@ use tower_http::cors::CorsLayer;
 struct AppState {
     tx: broadcast::Sender<TranslationUpdate>,
     settings_tx: watch::Sender<LanguageSelection>,
+    config: Arc<Phase2Config>,
 }
 
 pub async fn start_server(
     tx: broadcast::Sender<TranslationUpdate>,
     settings_tx: watch::Sender<LanguageSelection>,
+    config: Arc<Phase2Config>,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3001")
         .await
         .unwrap();
     log::info!("WebSocket Sunucusu başlatıldı: ws://127.0.0.1:3001/ws");
 
-    serve_with_listener(listener, tx, settings_tx).await;
+    serve_with_listener(listener, tx, settings_tx, config).await;
 }
 
 async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     tx: broadcast::Sender<TranslationUpdate>,
     settings_tx: watch::Sender<LanguageSelection>,
+    config: Arc<Phase2Config>,
 ) {
-    let state = AppState { tx, settings_tx };
+    let state = AppState {
+        tx,
+        settings_tx,
+        config,
+    };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/settings", get(get_settings).post(update_settings))
         .route("/upload", axum::routing::post(handle_upload))
         .with_state(state)
-        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB limit
+        .layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024)) // 300 MB limit
         .layer(CorsLayer::permissive());
 
     axum::serve(listener, app).await.unwrap();
@@ -113,7 +121,8 @@ async fn handle_socket(mut socket: WebSocket, tx: broadcast::Sender<TranslationU
 pub struct Subtitle {
     pub start: f64,
     pub end: f64,
-    pub text: String,
+    pub original: String, // source-language transcript from Deepgram
+    pub text: String,     // translated text (equals original when same-language pair)
 }
 
 use axum::extract::Multipart;
@@ -146,12 +155,7 @@ async fn handle_upload(
         return Err((StatusCode::BAD_REQUEST, "No file uploaded".into()));
     }
 
-    let config = crate::transcriber::Phase2Config::from_env().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Config error: {}", e),
-        )
-    })?;
+    let config = &state.config;
     let settings = state.settings_tx.borrow().clone();
     let stt_lang = crate::transcriber::resolve_deepgram_language(&settings.spoken_language, "en");
 
@@ -218,6 +222,7 @@ async fn handle_upload(
                 &config.groq_model,
                 &text,
                 &settings,
+                &[],
             )
             .await
             {
@@ -227,7 +232,8 @@ async fn handle_upload(
         subtitles.push(Subtitle {
             start,
             end,
-            text: final_text,
+            original: text,   // always the raw Deepgram transcript
+            text: final_text, // translated (or same as original for same-lang pairs)
         });
     }
 

@@ -26,6 +26,7 @@ class MockWebSocket {
 
 describe("Home", () => {
   beforeEach(() => {
+    localStorage.clear();
     MockWebSocket.instances = [];
     vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
     vi.stubGlobal(
