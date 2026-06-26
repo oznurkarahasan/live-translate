@@ -19,7 +19,7 @@ interface TranslationViewProps {
 }
 
 const TRANSLATION_HOLD_MS = 2500;
-const HISTORY_MAX = 3;
+const HISTORY_MAX = 2; // teleprompter view: max 2 faded rows above the active block
 
 interface HistoryEntry {
     id: number;
@@ -37,8 +37,8 @@ const VIEW_MODES: { mode: ViewMode; label: string }[] = [
 
 /** Returns stable Tailwind classes for a history slot by distance-from-end. */
 function historySlot(fromEnd: number) {
-    const opacity  = fromEnd === 0 ? "opacity-35" : fromEnd === 1 ? "opacity-20" : "opacity-10";
-    const textSize = fromEnd === 0 ? "text-sm md:text-base" : fromEnd === 1 ? "text-xs md:text-sm" : "text-xs";
+    const opacity  = fromEnd === 0 ? "opacity-35" : "opacity-20";
+    const textSize = fromEnd === 0 ? "text-sm md:text-base" : "text-xs md:text-sm";
     return { opacity, textSize, isNewest: fromEnd === 0 };
 }
 
@@ -51,16 +51,14 @@ export default function TranslationView({ config, translation, onStop, className
     const [displayedTranslation, setDisplayedTranslation] = useState(translation);
     const lastFullTranslationAt = useRef<number>(0);
     const [history, setHistory] = useState<HistoryEntry[]>([]);
-    const historyId = useRef(0);
+    const historyId  = useRef(0);
     const lastFinalRef = useRef<{ original: string; translated: string } | null>(null);
 
     // ── Layout state ───────────────────────────────────────────────────────────
     const [viewMode, setViewMode] = useState<ViewMode>("split");
     const [splitPercent, setSplitPercent] = useState(50);
-    const isDragging    = useRef(false);
-    const containerRef  = useRef<HTMLDivElement>(null);
-    const leftPanelRef  = useRef<HTMLDivElement>(null);
-    const rightPanelRef = useRef<HTMLDivElement>(null);
+    const isDragging   = useRef(false);
+    const containerRef = useRef<HTMLDivElement>(null);
 
     // ── Translation hold + dedup + history ────────────────────────────────────
     useEffect(() => {
@@ -94,17 +92,6 @@ export default function TranslationView({ config, translation, onStop, className
         }
         setDisplayedTranslation(translation);
     }, [translation]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // ── Auto-scroll: keep the active translation visible at the bottom ─────────
-    // Uses scrollTop assignment rather than scrollTo() because jsdom (used in
-    // tests) does not implement the scrollTo method on DOM elements.
-    useEffect(() => {
-        const scrollToBottom = (el: HTMLDivElement | null) => {
-            if (el) el.scrollTop = el.scrollHeight;
-        };
-        scrollToBottom(leftPanelRef.current);
-        scrollToBottom(rightPanelRef.current);
-    }, [history, displayedTranslation]);
 
     // ── Video / file upload ────────────────────────────────────────────────────
     useEffect(() => {
@@ -160,10 +147,10 @@ export default function TranslationView({ config, translation, onStop, className
     if (config.source === "file") {
         const sub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         activeTranslation = sub
-            ? { original: "", translated: sub.text,                          is_partial: false }
+            ? { original: "", translated: sub.text,                            is_partial: false }
             : isUploading
             ? { original: "", translated: "Analysing and translating video...", is_partial: false }
-            : { original: "", translated: " ",                                is_partial: false };
+            : { original: "", translated: " ",                                  is_partial: false };
     }
 
     // ── Drag-to-resize ─────────────────────────────────────────────────────────
@@ -186,18 +173,19 @@ export default function TranslationView({ config, translation, onStop, className
         document.addEventListener("mouseup", onMouseUp);
     };
 
-    const showLeft  = viewMode === "split" || viewMode === "source-only";
-    const showRight = viewMode === "split" || viewMode === "translation-only";
+    const showLeft    = viewMode === "split" || viewMode === "source-only";
+    const showRight   = viewMode === "split" || viewMode === "translation-only";
     const liveHistory = config.source !== "file";
 
-    // Shared inline-style builder for panels and their matching header cells.
-    const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }    : { flex: "1 1 auto" };
-    const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }              : { flex: "1 1 auto" };
+    // Shared flex-basis values used by both column headers and panels.
+    const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }  : { flex: "1 1 auto" };
+    const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }            : { flex: "1 1 auto" };
 
     return (
-        <div className={`w-full max-w-7xl mx-auto px-2 py-6 relative ${className}`}>
+        // Root fills the h-screen flex-col parent from page.tsx.
+        <div className={`w-full h-full flex flex-col overflow-hidden relative ${className}`}>
 
-            {/* ── Status overlay ─────────────────────────────────────────────── */}
+            {/* ── Status overlay (fixed, does not affect flow) ────────────────── */}
             <div className="fixed top-3 right-3 z-40 w-44 rounded-2xl border border-white/10 bg-black/55 p-3 backdrop-blur-xl">
                 <p className="text-[9px] text-gray-500 font-bold uppercase tracking-[0.18em]">Status</p>
                 <div className="mt-1 flex items-center gap-2">
@@ -224,12 +212,13 @@ export default function TranslationView({ config, translation, onStop, className
                 </button>
             </div>
 
-            {/* ── Main content ───────────────────────────────────────────────── */}
-            <div className="w-full flex flex-col items-center gap-6">
-
-                {/* Video */}
-                {config.source !== "none" && (
-                    <div className="w-full max-w-6xl aspect-video bg-zinc-950 rounded-3xl overflow-hidden border border-white/10 shadow-3xl relative mx-auto">
+            {/* ── Media area — flex-shrink-0 compact aspect-video box ────────────
+                 aspect-video gives a natural 16:9 height without dominating the
+                 screen. max-w-5xl keeps it readable without being massive.
+                 Hidden entirely for audio-only mode (no placeholder div).     */}
+            {config.source !== "none" && (
+                <div className="flex-shrink-0 w-full max-w-5xl aspect-video mx-auto mt-4 px-4 relative">
+                    <div className="w-full h-full bg-zinc-950 rounded-2xl overflow-hidden border border-white/10 relative">
                         {isUploading && config.source === "file" && (
                             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md gap-6">
                                 <div className="w-16 h-16 border-4 border-white/10 border-t-emerald-500 rounded-full animate-spin" />
@@ -247,12 +236,15 @@ export default function TranslationView({ config, translation, onStop, className
                             className={`w-full h-full transform-none transition-opacity duration-700 ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"} ${isUploading ? "opacity-0" : "opacity-100"}`}
                         />
                     </div>
-                )}
-                {config.source === "none" && (
-                    <div aria-hidden="true" className="w-full max-w-6xl aspect-video mx-auto" />
-                )}
+                </div>
+            )}
 
-                {/* ── View-mode controls ─────────────────────────────────────── */}
+            {/* Spacer — flex-1 absorbs all remaining vertical space, pinning
+                 the controls and translation glass firmly to the bottom.      */}
+            <div className="flex-1" aria-hidden="true" />
+
+            {/* ── View-mode controls — flex-shrink-0 (Middle) ─────────────────── */}
+            <div className="flex-shrink-0 flex items-center justify-center my-3">
                 <div className="flex items-center gap-1 bg-white/5 border border-white/8 rounded-2xl p-1 select-none">
                     {VIEW_MODES.map(({ mode, label }) => (
                         <button
@@ -268,157 +260,137 @@ export default function TranslationView({ config, translation, onStop, className
                         </button>
                     ))}
                 </div>
-
-                {/* ── Column headers — sit outside the glass container, perfectly
-                     aligned with their panels via the same flex-basis values.    */}
-                <div className="w-full max-w-7xl flex flex-row">
-                    {showLeft && (
-                        <p
-                            className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center"
-                            style={leftStyle}
-                        >
-                            {config.spokenLanguage}
-                        </p>
-                    )}
-                    {/* Spacer that mirrors the draggable divider width */}
-                    {viewMode === "split" && <div className="flex-shrink-0 w-4" aria-hidden="true" />}
-                    {showRight && (
-                        <p
-                            className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center"
-                            style={rightStyle}
-                        >
-                            {config.targetLanguage}
-                        </p>
-                    )}
-                </div>
-
-                {/* ── Two-panel layout ───────────────────────────────────────────
-                     max-h-[70vh] + overflow-hidden caps the visual footprint.
-                     Each panel uses overflow-y-auto so history scrolls internally
-                     while the headers and controls remain fixed above.           */}
-                <div
-                    ref={containerRef}
-                    className="w-full max-w-7xl bg-gradient-to-b from-white/4 to-white/0 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden flex flex-row relative max-h-[70vh]"
-                >
-                    {/* Top accent */}
-                    <div className="absolute top-0 left-12 w-16 h-[2px] bg-emerald-500/30 rounded-full pointer-events-none" />
-
-                    {/* ── Left panel — Source ───────────────────────────────── */}
-                    {showLeft && (
-                        <div
-                            ref={leftPanelRef}
-                            className="flex flex-col gap-3 p-8 overflow-y-auto"
-                            style={leftStyle}
-                        >
-                            {/* Source history */}
-                            {liveHistory && history.map((entry, i) => {
-                                const fromEnd = history.length - 1 - i;
-                                const { opacity, textSize, isNewest } = historySlot(fromEnd);
-                                const text = entry.original || entry.translated;
-                                if (!text) return null;
-                                return (
-                                    <div
-                                        key={entry.id}
-                                        className={`transition-all duration-500 ${opacity} ${isNewest ? "animate-in slide-in-from-bottom-3 duration-500" : ""}`}
-                                    >
-                                        <p className={`text-gray-300 font-medium text-center break-words whitespace-normal w-full leading-snug ${textSize}`}>
-                                            {text}
-                                        </p>
-                                    </div>
-                                );
-                            })}
-
-                            {/* Active source content */}
-                            <div className="flex-1 flex flex-col items-center justify-center min-h-[4rem]">
-                                {activeTranslation ? (
-                                    activeTranslation.is_partial ? (
-                                        <p className="text-white/75 text-xl md:text-2xl font-medium text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-300">
-                                            {activeTranslation.original || "Listening…"}
-                                        </p>
-                                    ) : activeTranslation.original ? (
-                                        <p
-                                            key={activeTranslation.original}
-                                            className="text-gray-400/65 text-xl md:text-2xl italic text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-500"
-                                        >
-                                            &ldquo;{activeTranslation.original}&rdquo;
-                                        </p>
-                                    ) : (
-                                        <p className="text-gray-600 text-sm text-center">&mdash;</p>
-                                    )
-                                ) : history.length === 0 ? (
-                                    <div className="opacity-30 flex flex-col items-center gap-3">
-                                        <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
-                                        <p className="text-white text-sm text-center">Waiting for speech…</p>
-                                    </div>
-                                ) : null}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ── Draggable divider ─────────────────────────────────── */}
-                    {viewMode === "split" && (
-                        <div
-                            className="flex-shrink-0 w-4 cursor-col-resize relative group select-none"
-                            onMouseDown={handleDividerMouseDown}
-                            aria-hidden="true"
-                        >
-                            <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/8 group-hover:bg-white/20 transition-colors duration-200" />
-                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/25 group-hover:bg-white/55 rounded-full transition-colors duration-200" />
-                        </div>
-                    )}
-
-                    {/* ── Right panel — Translation ─────────────────────────── */}
-                    {showRight && (
-                        <div
-                            ref={rightPanelRef}
-                            className="flex flex-col gap-3 p-8 overflow-y-auto"
-                            style={rightStyle}
-                        >
-                            {/* Translation history */}
-                            {liveHistory && history.map((entry, i) => {
-                                const fromEnd = history.length - 1 - i;
-                                const { opacity, textSize, isNewest } = historySlot(fromEnd);
-                                return (
-                                    <div
-                                        key={entry.id}
-                                        className={`transition-all duration-500 ${opacity} ${isNewest ? "animate-in slide-in-from-bottom-3 duration-500" : ""}`}
-                                    >
-                                        <p className={`text-gray-300 font-medium text-center break-words whitespace-normal w-full leading-snug ${textSize}`}>
-                                            {entry.translated}
-                                        </p>
-                                    </div>
-                                );
-                            })}
-
-                            {/* Active translation content */}
-                            <div className="flex-1 flex flex-col items-center justify-center min-h-[4rem]">
-                                {activeTranslation ? (
-                                    activeTranslation.is_partial ? (
-                                        <span className="flex gap-2 items-center">
-                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
-                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
-                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
-                                        </span>
-                                    ) : (
-                                        <p
-                                            key={activeTranslation.translated}
-                                            className="text-white text-2xl md:text-4xl font-bold leading-[1.3] text-center tracking-tight break-words whitespace-normal w-full animate-in fade-in duration-500"
-                                        >
-                                            {activeTranslation.translated}
-                                        </p>
-                                    )
-                                ) : history.length === 0 ? (
-                                    <div className="opacity-40 flex flex-col items-center gap-3">
-                                        <div className="w-2 h-2 bg-white rounded-full animate-bounce" />
-                                        <p className="text-white font-medium tracking-tighter text-xl text-center">Waiting for speech input...</p>
-                                    </div>
-                                ) : null}
-                            </div>
-                        </div>
-                    )}
-                </div>
-
             </div>
+
+            {/* ── Column headers — flex-shrink-0, mirrors panel flex widths ────── */}
+            <div className="flex-shrink-0 w-full max-w-[95%] mx-auto flex flex-row px-2 mb-1">
+                {showLeft && (
+                    <p className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center" style={leftStyle}>
+                        {config.spokenLanguage}
+                    </p>
+                )}
+                {viewMode === "split" && <div className="flex-shrink-0 w-4" aria-hidden="true" />}
+                {showRight && (
+                    <p className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center" style={rightStyle}>
+                        {config.targetLanguage}
+                    </p>
+                )}
+            </div>
+
+            {/* ── Translation glass — flex-shrink-0, fixed h-[25vh] ──────────────
+                 Never grows or shrinks regardless of content.
+                 Panels use flex-col justify-end: active block is anchored at the
+                 bottom; history rows overflow out the top (clipped by
+                 overflow-hidden) — no scrollbar ever appears.                 */}
+            <div
+                ref={containerRef}
+                className="flex-shrink-0 w-full max-w-[95%] mx-auto h-[18vh] max-h-[180px] mb-4 bg-gradient-to-b from-white/4 to-white/0 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden flex flex-row relative"
+            >
+                <div className="absolute top-0 left-12 w-16 h-[2px] bg-emerald-500/30 rounded-full pointer-events-none" />
+
+                {/* ── Left panel — Source ─────────────────────────────────────── */}
+                {showLeft && (
+                    <div className="flex flex-col justify-end gap-2 p-5 overflow-hidden h-full" style={leftStyle}>
+                        {liveHistory && history.map((entry, i) => {
+                            const fromEnd = history.length - 1 - i;
+                            const { opacity, textSize, isNewest } = historySlot(fromEnd);
+                            const text = entry.original || entry.translated;
+                            if (!text) return null;
+                            return (
+                                <div
+                                    key={entry.id}
+                                    className={`transition-all duration-500 ${opacity} ${isNewest ? "animate-in slide-in-from-bottom-3 duration-500" : ""}`}
+                                >
+                                    <p className={`text-gray-300 font-medium text-center break-words whitespace-normal w-full leading-snug ${textSize}`}>
+                                        {text}
+                                    </p>
+                                </div>
+                            );
+                        })}
+                        {/* Active source — flex-shrink-0 keeps it fully visible */}
+                        <div className="flex-shrink-0 flex flex-col items-center justify-center py-1">
+                            {activeTranslation ? (
+                                activeTranslation.is_partial ? (
+                                    <p className="text-white/75 text-sm md:text-base font-medium text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-300">
+                                        {activeTranslation.original || "Listening…"}
+                                    </p>
+                                ) : activeTranslation.original ? (
+                                    <p
+                                        key={activeTranslation.original}
+                                        className="text-white text-sm md:text-base font-bold text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-500"
+                                    >
+                                        {activeTranslation.original}
+                                    </p>
+                                ) : (
+                                    <p className="text-gray-600 text-xs text-center">&mdash;</p>
+                                )
+                            ) : history.length === 0 ? (
+                                <div className="opacity-30 flex flex-col items-center gap-2">
+                                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce" />
+                                    <p className="text-white text-xs text-center">Waiting for speech…</p>
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Draggable divider ───────────────────────────────────────── */}
+                {viewMode === "split" && (
+                    <div
+                        className="flex-shrink-0 w-4 cursor-col-resize relative group select-none"
+                        onMouseDown={handleDividerMouseDown}
+                        aria-hidden="true"
+                    >
+                        <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/8 group-hover:bg-white/20 transition-colors duration-200" />
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/25 group-hover:bg-white/55 rounded-full transition-colors duration-200" />
+                    </div>
+                )}
+
+                {/* ── Right panel — Translation ───────────────────────────────── */}
+                {showRight && (
+                    <div className="flex flex-col justify-end gap-2 p-5 overflow-hidden h-full" style={rightStyle}>
+                        {liveHistory && history.map((entry, i) => {
+                            const fromEnd = history.length - 1 - i;
+                            const { opacity, textSize, isNewest } = historySlot(fromEnd);
+                            return (
+                                <div
+                                    key={entry.id}
+                                    className={`transition-all duration-500 ${opacity} ${isNewest ? "animate-in slide-in-from-bottom-3 duration-500" : ""}`}
+                                >
+                                    <p className={`text-gray-300 font-medium text-center break-words whitespace-normal w-full leading-snug ${textSize}`}>
+                                        {entry.translated}
+                                    </p>
+                                </div>
+                            );
+                        })}
+                        {/* Active translation — flex-shrink-0 guarantees full visibility */}
+                        <div className="flex-shrink-0 flex flex-col items-center justify-center py-1">
+                            {activeTranslation ? (
+                                activeTranslation.is_partial ? (
+                                    <span className="flex gap-2 items-center">
+                                        <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
+                                        <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
+                                        <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                                    </span>
+                                ) : (
+                                    <p
+                                        key={activeTranslation.translated}
+                                        className="text-white text-lg md:text-2xl font-bold leading-[1.3] text-center tracking-tight break-words whitespace-normal w-full animate-in fade-in duration-500"
+                                    >
+                                        {activeTranslation.translated}
+                                    </p>
+                                )
+                            ) : history.length === 0 ? (
+                                <div className="opacity-40 flex flex-col items-center gap-2">
+                                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce" />
+                                    <p className="text-white font-medium text-sm text-center">Waiting for speech input...</p>
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                )}
+            </div>
+
         </div>
     );
 }

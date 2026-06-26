@@ -36,7 +36,6 @@ export default function Home() {
 
     isActiveRef.current = true;
 
-    // Connect to Backend WebSocket
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "ws://127.0.0.1:3001/ws";
 
     const connect = () => {
@@ -54,11 +53,6 @@ export default function Home() {
           const update: TranslationUpdate = JSON.parse(event.data);
           setData(prev => {
             // Drop duplicate final translations at the WebSocket boundary.
-            // The backend VAD hangover keeps audio streaming after Deepgram's
-            // own endpointing fires, which can produce a second is_final event
-            // with identical (or near-identical) text. Comparing inside the
-            // functional setter guarantees we read the latest committed state,
-            // not a stale closure capture.
             if (
               !update.is_partial &&
               prev !== null &&
@@ -86,9 +80,7 @@ export default function Home() {
 
     return () => {
       isActiveRef.current = false;
-      // Cancel any pending reconnect before closing — without this, a timer
-      // scheduled during a 5-second disconnect window would fire after Stop and
-      // create a dangling WebSocket that is never closed or cleaned up.
+      // Cancel any pending reconnect before closing to prevent dangling sockets.
       if (reconnectTimer.current !== null) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
@@ -101,9 +93,7 @@ export default function Home() {
     try {
       await fetch("http://127.0.0.1:3001/settings", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           spoken_language: config.spokenLanguage,
           target_language: config.targetLanguage,
@@ -112,9 +102,7 @@ export default function Home() {
     } catch (error) {
       console.error("Failed to sync settings with backend:", error);
     }
-
     setActiveConfig(config);
-    console.log("Starting with config:", config);
   };
 
   const handleStop = () => {
@@ -123,19 +111,24 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#030303] flex items-center justify-center p-4 relative overflow-hidden">
+    // h-screen + overflow-hidden kills the global scrollbar.
+    // flex flex-col lets TranslationView fill the full viewport via h-full.
+    <main className="h-screen w-screen bg-[#030303] overflow-hidden relative flex flex-col">
       {/* Background Ambience */}
-      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-emerald-600/5 blur-[150px] rounded-full" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-blue-600/5 blur-[150px] rounded-full" />
+      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-emerald-600/5 blur-[150px] rounded-full pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-blue-600/5 blur-[150px] rounded-full pointer-events-none" />
 
       {!activeConfig ? (
-        <SetupDialog onStart={handleStart} className="z-10" />
+        // Centering wrapper for SetupDialog only.
+        <div className="flex-1 flex items-center justify-center p-4 z-10">
+          <SetupDialog onStart={handleStart} />
+        </div>
       ) : (
         <TranslationView
           config={activeConfig}
           translation={data || undefined}
           onStop={handleStop}
-          className="z-10"
+          className="w-full h-full z-10"
         />
       )}
     </main>
