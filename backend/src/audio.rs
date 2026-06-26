@@ -1,6 +1,12 @@
 // Copyright 2026 live-translate
 // Licensed under the Apache License, Version 2.0
 
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+compile_error!(
+    "System audio loopback is only supported on Windows (WASAPI) and Linux \
+     (PulseAudio/PipeWire). macOS is not supported."
+);
+
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
@@ -103,8 +109,104 @@ pub fn zero_crossing_rate(samples: &[f32]) -> f32 {
 
 pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let host = cpal::default_host();
-    let device = host.default_input_device().context("No input device")?;
-    let config_range = device.default_input_config()?;
+
+    // Windows: WASAPI loopback — build_input_stream on the default render device.
+    // cpal's WASAPI backend detects eRender data flow and sets AUDCLNT_STREAMFLAGS_LOOPBACK.
+    #[cfg(target_os = "windows")]
+    let (device, config_range) = {
+        let device = host
+            .default_output_device()
+            .context("No default output device for WASAPI loopback")?;
+        let config = device
+            .default_output_config()
+            .context("Failed to query WASAPI output device config")?;
+        log::info!(
+            "Windows WASAPI loopback: capturing from '{}'",
+            device.name().unwrap_or_else(|_| "unknown".into())
+        );
+        (device, config)
+    };
+
+    // Linux device selection priority:
+    //   1. LIVE_TRANSLATE_CHOSEN_DEVICE env var — exact substring match against device name.
+    //   2. Auto-detect: first device whose name contains "monitor", then "pulse", then "default".
+    //   3. host.default_input_device() as a last resort (logs a warning).
+    //
+    // Set LIVE_TRANSLATE_CHOSEN_DEVICE=pulse in .env to pin a specific device.
+    #[cfg(target_os = "linux")]
+    let (device, config_range) = {
+        let all_inputs: Vec<cpal::Device> = host
+            .input_devices()
+            .context("Failed to enumerate input devices")?
+            .collect();
+
+        log::info!("Discovered {} input device(s):", all_inputs.len());
+        for d in &all_inputs {
+            log::info!("  - {}", d.name().unwrap_or_else(|_| "<unnamed>".into()));
+        }
+
+        // Build a helper that matches a device name against a needle (case-insensitive contains).
+        let matches = |d: &cpal::Device, needle: &str| {
+            d.name()
+                .map(|n| n.to_lowercase().contains(&needle.to_lowercase()))
+                .unwrap_or(false)
+        };
+
+        let chosen_device_name = std::env::var("LIVE_TRANSLATE_CHOSEN_DEVICE").ok();
+
+        let selected: cpal::Device = if let Some(ref name) = chosen_device_name {
+            // Priority 1: explicit env var override.
+            match all_inputs.into_iter().find(|d| matches(d, name)) {
+                Some(d) => {
+                    log::info!(
+                        "Linux: using LIVE_TRANSLATE_CHOSEN_DEVICE-selected device '{}'",
+                        d.name().unwrap_or_else(|_| "unknown".into())
+                    );
+                    d
+                }
+                None => {
+                    anyhow::bail!(
+                        "LIVE_TRANSLATE_CHOSEN_DEVICE=\"{}\" set but no matching input device found. \
+                         Check the device list above.",
+                        name
+                    );
+                }
+            }
+        } else {
+            // Priority 2: auto-detect — monitor → pulse → default name → system default.
+            let candidates = ["monitor", "pulse", "default"];
+            let auto = candidates
+                .iter()
+                .find_map(|&needle| all_inputs.iter().find(|d| matches(d, needle)));
+
+            match auto {
+                Some(d) => {
+                    log::info!(
+                        "Linux loopback: auto-selected device '{}'",
+                        d.name().unwrap_or_else(|_| "unknown".into())
+                    );
+                    // `d` is a &cpal::Device borrowed from all_inputs; re-find by name to take ownership.
+                    let name = d.name().unwrap_or_default();
+                    all_inputs.into_iter().find(|d| matches(d, &name)).unwrap()
+                }
+                None => {
+                    log::warn!(
+                        "No monitor/pulse/default device found — falling back to system default input. \
+                         System audio loopback may NOT be captured. \
+                         Set LIVE_TRANSLATE_CHOSEN_DEVICE=<name> in .env to pin a device."
+                    );
+                    host.default_input_device()
+                        .context("No default input device available")?
+                }
+            }
+        };
+
+        let config = selected
+            .default_input_config()
+            .context("Failed to query input device config")?;
+        (selected, config)
+    };
+
     let sample_rate = config_range.sample_rate().0;
     let channels = config_range.channels();
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -135,9 +237,20 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let mut hangover_remaining_ms: f32 = 0.0;
     let mut pre_buffer: VecDeque<Vec<u8>> = VecDeque::with_capacity(PRE_SPEECH_FRAMES + 1);
 
-    let stream = device.build_input_stream(
-        &config_range.into(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+    // Read the device's native format before consuming config_range.
+    // This drives the format-dispatch below so ALSA is never asked to use a
+    // sample format it doesn't support (e.g. F32 on hw: devices).
+    let sample_format = config_range.sample_format();
+    let stream_config: cpal::StreamConfig = config_range.into();
+
+    log::info!("Device native sample format: {:?}", sample_format);
+
+    // The entire VAD pipeline lives inside one Box<dyn FnMut(&[f32])> so that
+    // mutable state (noise_floor, hangover, pre_buffer) is created exactly once.
+    // Option::take() transfers ownership into whichever format arm actually runs;
+    // the other arms compile but are never reached at runtime.
+    let mut vad_cb: Option<Box<dyn FnMut(&[f32]) + Send + 'static>> =
+        Some(Box::new(move |data: &[f32]| {
             let resampled = process_audio_frame(data, channels, sample_rate);
 
             if resampled.is_empty() {
@@ -244,10 +357,54 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
                     hangover_remaining_ms,
                 );
             }
-        },
-        move |err| log::error!("Stream error: {}", err),
-        None,
-    )?;
+        }));
+
+    // Build a stream using the device's native sample format.
+    // Non-f32 formats are converted with simple arithmetic before entering the
+    // pipeline — no ALSA format coercion, no Invalid argument (22) crash.
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| cb(data),
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        cpal::SampleFormat::I16 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    // Map signed 16-bit integers to [-1.0, 1.0].
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    cb(&floats)
+                },
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        cpal::SampleFormat::U16 => {
+            let mut cb = vad_cb.take().unwrap();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    // Shift unsigned 16-bit integers to signed range, then normalize to [-1.0, 1.0].
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| (s as f32 / 32_768.0) - 1.0).collect();
+                    cb(&floats)
+                },
+                move |err| log::error!("Stream error: {}", err),
+                None,
+            )?
+        }
+        fmt => anyhow::bail!(
+            "Unsupported device sample format {:?}. Expected F32, I16, or U16.",
+            fmt
+        ),
+    };
 
     stream.play()?;
 
