@@ -134,7 +134,8 @@ pub async fn run_realtime_pipeline(
                             }
 
                             if let Some(final_transcript) = extract_final_transcript(&text) {
-                                if final_transcript == last_final {
+                                if is_duplicate_transcript(&final_transcript, &last_final) {
+                                    log::debug!("Skipping duplicate transcript: {:?}", final_transcript);
                                     continue;
                                 }
 
@@ -294,6 +295,25 @@ async fn connect_to_deepgram(
         .context("Failed to connect to Deepgram realtime websocket")?;
 
     Ok(websocket.split())
+}
+
+/// Returns true when two transcripts represent the same utterance.
+///
+/// Deepgram can emit the same spoken text with subtle differences between
+/// successive `is_final` events (e.g. "hello world" vs "Hello world." — the
+/// second fires when our VAD hangover audio finally drains through). Exact
+/// string equality misses these near-duplicates; normalising before comparison
+/// catches them without any false positives for genuinely different sentences.
+fn is_duplicate_transcript(new: &str, last: &str) -> bool {
+    if last.is_empty() {
+        return false;
+    }
+    let normalize = |s: &str| {
+        s.trim()
+            .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'))
+            .to_lowercase()
+    };
+    normalize(new) == normalize(last)
 }
 
 fn extract_partial_transcript(text: &str) -> Option<String> {

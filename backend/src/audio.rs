@@ -224,8 +224,11 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     const SNR_RATIO: f32 = 3.0;
 
     /// How long to keep streaming after speech stops (ms).
-    /// Prevents clipping the tail of words and sentences.
-    const HANGOVER_MS: f32 = 300.0;
+    /// Bridges natural breath pauses so a full sentence reaches Deepgram before
+    /// the stream is cut. 300 ms was too short — mid-sentence breaths triggered
+    /// premature utterance finalization. 900 ms comfortably covers a breath pause
+    /// (~200–400 ms) plus the Deepgram is_final propagation delay (~100–200 ms).
+    const HANGOVER_MS: f32 = 900.0;
 
     /// Number of pre-speech frames to buffer.
     /// At ~20ms/frame this covers ~160 ms before speech onset,

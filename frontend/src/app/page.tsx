@@ -48,7 +48,23 @@ export default function Home() {
       socketRef.current.onmessage = (event) => {
         try {
           const update: TranslationUpdate = JSON.parse(event.data);
-          setData(update);
+          setData(prev => {
+            // Drop duplicate final translations at the WebSocket boundary.
+            // The backend VAD hangover keeps audio streaming after Deepgram's
+            // own endpointing fires, which can produce a second is_final event
+            // with identical (or near-identical) text. Comparing inside the
+            // functional setter guarantees we read the latest committed state,
+            // not a stale closure capture.
+            if (
+              !update.is_partial &&
+              prev !== null &&
+              !prev.is_partial &&
+              prev.translated === update.translated
+            ) {
+              return prev;
+            }
+            return update;
+          });
         } catch (err) {
           console.error("Failed to parse message:", err);
         }
