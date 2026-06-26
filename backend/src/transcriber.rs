@@ -83,7 +83,9 @@ pub async fn run_realtime_pipeline(
     let mut backoff_secs: u64 = 1;
 
     'reconnect: loop {
-        let (mut ws_write, mut ws_read) = match connect_to_deepgram(&cfg, &active_stt_language).await {
+        let (mut ws_write, mut ws_read) = match connect_to_deepgram(&cfg, &active_stt_language)
+            .await
+        {
             Ok(ws) => {
                 log::info!(
                     "Phase 2 pipeline active: streaming to Deepgram + Groq translation (STT language: {})",
@@ -95,7 +97,8 @@ pub async fn run_realtime_pipeline(
             Err(err) => {
                 log::warn!(
                     "Deepgram connect failed ({}); retrying in {}s",
-                    err, backoff_secs
+                    err,
+                    backoff_secs
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(30);
@@ -384,7 +387,7 @@ pub async fn translate_text(
     groq_model: &str,
     text: &str,
     language_selection: &LanguageSelection,
-    context: &[(String, String)],   // (original_chunk, translated_chunk) pairs
+    context: &[(String, String)], // (original_chunk, translated_chunk) pairs
 ) -> anyhow::Result<String> {
     // The system prompt establishes the interpreter role and continuation contract.
     // It intentionally contains NO inline history — that lives in the conversation
@@ -431,8 +434,7 @@ pub async fn translate_text(
     // so it fires closest to the generation boundary (highest recency weight).
     let user_content = format!(
         "{}\n\n[Translate the above to {} ONLY. DO NOT output the source language.]",
-        text,
-        language_selection.target_language,
+        text, language_selection.target_language,
     );
     messages.push(serde_json::json!({"role": "user", "content": user_content}));
 

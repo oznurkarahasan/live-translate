@@ -21,7 +21,11 @@ async fn main() -> anyhow::Result<()> {
     let (tx, _) = broadcast::channel(128);
     let (settings_tx, settings_rx) = watch::channel(config.initial_language_selection());
 
-    tokio::spawn(server::start_server(tx.clone(), settings_tx, Arc::new(config.clone())));
+    tokio::spawn(server::start_server(
+        tx.clone(),
+        settings_tx,
+        Arc::new(config.clone()),
+    ));
 
     transcriber::run_realtime_pipeline(capture.rx, config, tx, settings_rx).await?;
 

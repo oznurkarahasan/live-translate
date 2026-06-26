@@ -81,6 +81,10 @@ describe("Home", () => {
       expect(screen.getByText("Stop")).toBeInTheDocument();
     });
 
+    // React 19 schedules passive effects asynchronously — wait explicitly for
+    // the WebSocket to be created before asserting on the instance.
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0));
+
     const socket = MockWebSocket.instances[0];
     expect(socket.url).toBe("ws://127.0.0.1:3001/ws");
 

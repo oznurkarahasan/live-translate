@@ -101,7 +101,7 @@ export default function TranslationView({ config, translation, onStop, className
         let localFileUrl: string | null = null;
 
         if (config.source === "camera") {
-            navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+            navigator.mediaDevices?.getUserMedia({ video: true, audio: false })
                 .then(s => {
                     if (isDisposed) { s.getTracks().forEach(t => t.stop()); return; }
                     localStream = s;

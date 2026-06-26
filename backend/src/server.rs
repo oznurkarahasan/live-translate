@@ -40,7 +40,11 @@ async fn serve_with_listener(
     settings_tx: watch::Sender<LanguageSelection>,
     config: Arc<Phase2Config>,
 ) {
-    let state = AppState { tx, settings_tx, config };
+    let state = AppState {
+        tx,
+        settings_tx,
+        config,
+    };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -117,8 +121,8 @@ async fn handle_socket(mut socket: WebSocket, tx: broadcast::Sender<TranslationU
 pub struct Subtitle {
     pub start: f64,
     pub end: f64,
-    pub original: String,   // source-language transcript from Deepgram
-    pub text: String,       // translated text (equals original when same-language pair)
+    pub original: String, // source-language transcript from Deepgram
+    pub text: String,     // translated text (equals original when same-language pair)
 }
 
 use axum::extract::Multipart;
@@ -228,8 +232,8 @@ async fn handle_upload(
         subtitles.push(Subtitle {
             start,
             end,
-            original: text,       // always the raw Deepgram transcript
-            text: final_text,     // translated (or same as original for same-lang pairs)
+            original: text,   // always the raw Deepgram transcript
+            text: final_text, // translated (or same as original for same-lang pairs)
         });
     }
 

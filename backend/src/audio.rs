@@ -263,8 +263,8 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     // mutable state (noise_floor, hangover, pre_buffer) is created exactly once.
     // Option::take() transfers ownership into whichever format arm actually runs;
     // the other arms compile but are never reached at runtime.
-    let mut vad_cb: Option<Box<dyn FnMut(&[f32]) + Send + 'static>> =
-        Some(Box::new(move |data: &[f32]| {
+    let mut vad_cb: Option<Box<dyn FnMut(&[f32]) + Send + 'static>> = Some(Box::new(
+        move |data: &[f32]| {
             let resampled = process_audio_frame(data, channels, sample_rate);
 
             if resampled.is_empty() {
@@ -274,8 +274,8 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
             // ── Feature extraction ───────────────────────────────────────────
             let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
 
-            let rms = (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32)
-                .sqrt();
+            let rms =
+                (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32).sqrt();
 
             let zcr = zero_crossing_rate(&resampled);
 
@@ -371,7 +371,8 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
                     hangover_remaining_ms,
                 );
             }
-        }));
+        },
+    ));
 
     // Build a stream using the device's native sample format.
     // Non-f32 formats are converted with simple arithmetic before entering the
