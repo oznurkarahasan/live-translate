@@ -20,8 +20,9 @@ interface AppConfig {
 export default function Home() {
   const [activeConfig, setActiveConfig] = useState<AppConfig | null>(null);
   const [data, setData] = useState<TranslationUpdate | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const isActiveRef = useRef(false);
+  const socketRef       = useRef<WebSocket | null>(null);
+  const isActiveRef     = useRef(false);
+  const reconnectTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Handle live updates from backend
   useEffect(() => {
@@ -39,6 +40,9 @@ export default function Home() {
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "ws://127.0.0.1:3001/ws";
 
     const connect = () => {
+      // Re-check at fire time: the user may have stopped the session during
+      // the 5-second reconnect delay, making isActiveRef false.
+      if (!isActiveRef.current) return;
       socketRef.current = new WebSocket(backendUrl);
 
       socketRef.current.onopen = () => {
@@ -72,7 +76,9 @@ export default function Home() {
 
       socketRef.current.onclose = () => {
         console.log("Disconnected from Backend");
-        if (isActiveRef.current) setTimeout(connect, 5000);
+        if (isActiveRef.current) {
+          reconnectTimer.current = setTimeout(connect, 5000);
+        }
       };
     };
 
@@ -80,6 +86,13 @@ export default function Home() {
 
     return () => {
       isActiveRef.current = false;
+      // Cancel any pending reconnect before closing — without this, a timer
+      // scheduled during a 5-second disconnect window would fire after Stop and
+      // create a dangling WebSocket that is never closed or cleaned up.
+      if (reconnectTimer.current !== null) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
       socketRef.current?.close();
     };
   }, [activeConfig]);

@@ -219,6 +219,17 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     /// Close to 1.0 = slow adaptation (doesn't track speech as noise).
     const NOISE_FLOOR_ALPHA: f32 = 0.995;
 
+    /// Hard lower bound on the adaptive noise floor.
+    ///
+    /// Without this clamp, an extended period of absolute silence (muted mic,
+    /// no hardware audio) causes noise_floor → 0 via repeated exponential decay.
+    /// Once the floor reaches ~0, dynamic_threshold = noise_floor × SNR_RATIO ≈ 0,
+    /// and any ambient noise (fan, traffic) passes Stage 1 — triggering continuous
+    /// false-positive speech detection and non-stop Deepgram audio streaming.
+    /// A floor of 0.001 keeps the threshold above the background noise floor of a
+    /// typical laptop mic in a quiet room (~0.0005–0.002 RMS).
+    const NOISE_FLOOR_MIN: f32 = 0.001;
+
     /// Speech threshold = noise_floor × SNR_RATIO.
     /// 3.0 means speech must be 3× louder than the measured ambient noise.
     const SNR_RATIO: f32 = 3.0;
@@ -306,8 +317,8 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
             // We skip the update while the hangover is active to prevent
             // voiced audio from dragging the floor upward.
             if !is_speech && hangover_remaining_ms <= 0.0 {
-                noise_floor =
-                    NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms;
+                noise_floor = (NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms)
+                    .max(NOISE_FLOOR_MIN);
             }
 
             // ── Hangover logic ───────────────────────────────────────────────

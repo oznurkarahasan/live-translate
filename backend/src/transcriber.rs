@@ -75,7 +75,11 @@ pub async fn run_realtime_pipeline(
         resolve_deepgram_language(&initial_spoken_language, &cfg.deepgram_language);
     let http_client = Client::new();
     let mut last_final = String::new();
-    let mut translation_context: Vec<String> = Vec::new();
+    // Sliding context window: last N (original, translated) pairs sent to Groq.
+    // 5 pairs = 10 extra messages per request; at ~40 tokens/pair ≈ 400 context tokens.
+    // Larger window improves pronoun/terminology consistency; smaller reduces API latency.
+    const CONTEXT_WINDOW: usize = 5;
+    let mut translation_context: Vec<(String, String)> = Vec::with_capacity(CONTEXT_WINDOW);
     let mut backoff_secs: u64 = 1;
 
     'reconnect: loop {
@@ -171,10 +175,12 @@ pub async fn run_realtime_pipeline(
                                     Ok(translated_text) => {
                                         println!("[{}] {}", language_selection.target_language, translated_text);
 
-                                        translation_context.push(translated_text.clone());
-                                        if translation_context.len() > 3 {
+                                        // Trim before push so the Vec never exceeds CONTEXT_WINDOW.
+                                        // remove(0) is O(n) but n ≤ CONTEXT_WINDOW which is tiny.
+                                        if translation_context.len() >= CONTEXT_WINDOW {
                                             translation_context.remove(0);
                                         }
+                                        translation_context.push((final_transcript.clone(), translated_text.clone()));
 
                                         let _ = tx.send(TranslationUpdate {
                                             original: final_transcript,
@@ -378,42 +384,59 @@ pub async fn translate_text(
     groq_model: &str,
     text: &str,
     language_selection: &LanguageSelection,
-    context: &[String],
+    context: &[(String, String)],   // (original_chunk, translated_chunk) pairs
 ) -> anyhow::Result<String> {
-    let context_block = if context.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\nFor consistency, here are the preceding sentences already translated:\n{}",
-            context
-                .iter()
-                .map(|s| format!("- {s}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
-
+    // The system prompt establishes the interpreter role and continuation contract.
+    // It intentionally contains NO inline history — that lives in the conversation
+    // turns below so the model treats it as genuine prior context, not a summary.
     let prompt = format!(
-        "You are an expert, highly accurate translator. Translate the following text from {} to {}. Make it sound natural and contextual in the target language. CRITICAL: Output ONLY the direct translation. No explanations, no notes, no quotes.{}",
-        language_selection.spoken_language,
-        language_selection.target_language,
-        context_block,
+        "You are a professional Simultaneous Interpreter.\n\
+         Source language: {source}. Target language: {target}.\n\
+         \n\
+         You will receive a sequence of conversation turns:\n\
+         - Each [user] message is a spoken audio chunk in {source}.\n\
+         - Each [assistant] message is its {target} translation.\n\
+         \n\
+         ## Rules\n\
+         1. Translate ONLY the final [user] message.\n\
+         2. DO NOT repeat any part of a previous [assistant] turn — continue the \
+            narrative smoothly, as a simultaneous interpreter would.\n\
+         3. If the new chunk adds no semantic value beyond what is already translated, \
+            output nothing at all.\n\
+         4. Apply rules 2-3 regardless of source/target syntactic order \
+            (SOV, SVO, VSO, etc.): identify meaning, not surface tokens.\n\
+         5. Preserve proper nouns, technical terms, and named entities as-is unless a \
+            standard {target} equivalent exists.\n\
+         6. Output ONLY the translation — no explanations, notes, or quotes.",
+        source = language_selection.spoken_language,
+        target = language_selection.target_language,
     );
+
+    // Build the multi-turn message array:
+    //   system
+    //   [user: original_1, assistant: translated_1]  ← history pairs
+    //   ...
+    //   user: current_chunk                          ← what to translate now
+    let mut messages: Vec<serde_json::Value> = Vec::with_capacity(1 + context.len() * 2 + 1);
+    messages.push(serde_json::json!({"role": "system", "content": prompt}));
+
+    for (original, translated) in context {
+        messages.push(serde_json::json!({"role": "user",      "content": original}));
+        messages.push(serde_json::json!({"role": "assistant", "content": translated}));
+    }
+
+    messages.push(serde_json::json!({"role": "user", "content": text}));
 
     let body = serde_json::json!({
         "model": groq_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": prompt
-            },
-            {
-                "role": "user",
-                "content": text
-            }
-        ],
+        "messages": messages,
         "temperature": 0.0
     });
+
+    log::debug!(
+        "[Groq payload]\n{}",
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "<serialization error>".into())
+    );
 
     let response = client
         .post("https://api.groq.com/openai/v1/chat/completions")

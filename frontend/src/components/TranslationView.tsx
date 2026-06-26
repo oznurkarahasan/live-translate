@@ -30,9 +30,9 @@ interface HistoryEntry {
 type ViewMode = "split" | "source-only" | "translation-only";
 
 const VIEW_MODES: { mode: ViewMode; label: string }[] = [
-    { mode: "source-only",       label: "Source" },
-    { mode: "split",             label: "Split"  },
-    { mode: "translation-only",  label: "Translation" },
+    { mode: "source-only",      label: "Source"      },
+    { mode: "split",            label: "Split"       },
+    { mode: "translation-only", label: "Translation" },
 ];
 
 /** Returns stable Tailwind classes for a history slot by distance-from-end. */
@@ -43,7 +43,7 @@ function historySlot(fromEnd: number) {
 }
 
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
-    // ── Existing state ─────────────────────────────────────────────────────────
+    // ── State ──────────────────────────────────────────────────────────────────
     const videoRef = useRef<HTMLVideoElement>(null);
     const [subtitles, setSubtitles] = useState<{ start: number; end: number; text: string }[]>([]);
     const [currentTime, setCurrentTime] = useState(0);
@@ -56,9 +56,11 @@ export default function TranslationView({ config, translation, onStop, className
 
     // ── Layout state ───────────────────────────────────────────────────────────
     const [viewMode, setViewMode] = useState<ViewMode>("split");
-    const [splitPercent, setSplitPercent] = useState(50);   // left panel width %
-    const isDragging = useRef(false);
-    const containerRef = useRef<HTMLDivElement>(null);
+    const [splitPercent, setSplitPercent] = useState(50);
+    const isDragging    = useRef(false);
+    const containerRef  = useRef<HTMLDivElement>(null);
+    const leftPanelRef  = useRef<HTMLDivElement>(null);
+    const rightPanelRef = useRef<HTMLDivElement>(null);
 
     // ── Translation hold + dedup + history ────────────────────────────────────
     useEffect(() => {
@@ -69,7 +71,6 @@ export default function TranslationView({ config, translation, onStop, className
             return;
         }
         if (!translation.is_partial && translation.translated) {
-            // Deduplicate: skip if this text is already active or in history.
             const activeText = lastFinalRef.current?.translated;
             const inHistory  = history.some(h => h.translated === translation.translated);
             if (translation.translated === activeText || inHistory) {
@@ -93,6 +94,17 @@ export default function TranslationView({ config, translation, onStop, className
         }
         setDisplayedTranslation(translation);
     }, [translation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Auto-scroll: keep the active translation visible at the bottom ─────────
+    // Uses scrollTop assignment rather than scrollTo() because jsdom (used in
+    // tests) does not implement the scrollTo method on DOM elements.
+    useEffect(() => {
+        const scrollToBottom = (el: HTMLDivElement | null) => {
+            if (el) el.scrollTop = el.scrollHeight;
+        };
+        scrollToBottom(leftPanelRef.current);
+        scrollToBottom(rightPanelRef.current);
+    }, [history, displayedTranslation]);
 
     // ── Video / file upload ────────────────────────────────────────────────────
     useEffect(() => {
@@ -143,15 +155,15 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
-    // ── Active translation (file mode uses subtitle timestamps) ───────────────
+    // ── Active translation (file mode: subtitle timestamps) ───────────────────
     let activeTranslation = displayedTranslation;
     if (config.source === "file") {
         const sub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         activeTranslation = sub
-            ? { original: "", translated: sub.text, is_partial: false }
+            ? { original: "", translated: sub.text,                          is_partial: false }
             : isUploading
             ? { original: "", translated: "Analysing and translating video...", is_partial: false }
-            : { original: "", translated: " ", is_partial: false };
+            : { original: "", translated: " ",                                is_partial: false };
     }
 
     // ── Drag-to-resize ─────────────────────────────────────────────────────────
@@ -176,9 +188,11 @@ export default function TranslationView({ config, translation, onStop, className
 
     const showLeft  = viewMode === "split" || viewMode === "source-only";
     const showRight = viewMode === "split" || viewMode === "translation-only";
-
-    // ── Helpers ────────────────────────────────────────────────────────────────
     const liveHistory = config.source !== "file";
+
+    // Shared inline-style builder for panels and their matching header cells.
+    const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }    : { flex: "1 1 auto" };
+    const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }              : { flex: "1 1 auto" };
 
     return (
         <div className={`w-full max-w-7xl mx-auto px-2 py-6 relative ${className}`}>
@@ -255,10 +269,36 @@ export default function TranslationView({ config, translation, onStop, className
                     ))}
                 </div>
 
-                {/* ── Two-panel layout ───────────────────────────────────────── */}
+                {/* ── Column headers — sit outside the glass container, perfectly
+                     aligned with their panels via the same flex-basis values.    */}
+                <div className="w-full max-w-7xl flex flex-row">
+                    {showLeft && (
+                        <p
+                            className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center"
+                            style={leftStyle}
+                        >
+                            {config.spokenLanguage}
+                        </p>
+                    )}
+                    {/* Spacer that mirrors the draggable divider width */}
+                    {viewMode === "split" && <div className="flex-shrink-0 w-4" aria-hidden="true" />}
+                    {showRight && (
+                        <p
+                            className="text-[10px] text-gray-500/70 font-bold uppercase tracking-[0.2em] text-center"
+                            style={rightStyle}
+                        >
+                            {config.targetLanguage}
+                        </p>
+                    )}
+                </div>
+
+                {/* ── Two-panel layout ───────────────────────────────────────────
+                     max-h-[70vh] + overflow-hidden caps the visual footprint.
+                     Each panel uses overflow-y-auto so history scrolls internally
+                     while the headers and controls remain fixed above.           */}
                 <div
                     ref={containerRef}
-                    className="w-full max-w-7xl bg-gradient-to-b from-white/4 to-white/0 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden flex flex-row relative"
+                    className="w-full max-w-7xl bg-gradient-to-b from-white/4 to-white/0 backdrop-blur-xl border border-white/10 rounded-[2rem] overflow-hidden flex flex-row relative max-h-[70vh]"
                 >
                     {/* Top accent */}
                     <div className="absolute top-0 left-12 w-16 h-[2px] bg-emerald-500/30 rounded-full pointer-events-none" />
@@ -266,18 +306,10 @@ export default function TranslationView({ config, translation, onStop, className
                     {/* ── Left panel — Source ───────────────────────────────── */}
                     {showLeft && (
                         <div
-                            className="flex flex-col gap-3 p-8 overflow-hidden"
-                            style={
-                                viewMode === "split"
-                                    ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }
-                                    : { flex: "1 1 auto" }
-                            }
+                            ref={leftPanelRef}
+                            className="flex flex-col gap-3 p-8 overflow-y-auto"
+                            style={leftStyle}
                         >
-                            {/* Language label */}
-                            <p className="text-[9px] text-gray-600 font-bold uppercase tracking-[0.2em] text-center">
-                                {config.spokenLanguage}
-                            </p>
-
                             {/* Source history */}
                             {liveHistory && history.map((entry, i) => {
                                 const fromEnd = history.length - 1 - i;
@@ -300,12 +332,10 @@ export default function TranslationView({ config, translation, onStop, className
                             <div className="flex-1 flex flex-col items-center justify-center min-h-[4rem]">
                                 {activeTranslation ? (
                                     activeTranslation.is_partial ? (
-                                        /* Partial: live STT stream — prominent, no quotes */
                                         <p className="text-white/75 text-xl md:text-2xl font-medium text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-300">
                                             {activeTranslation.original || "Listening…"}
                                         </p>
                                     ) : activeTranslation.original ? (
-                                        /* Final: completed utterance — quoted, dimmed */
                                         <p
                                             key={activeTranslation.original}
                                             className="text-gray-400/65 text-xl md:text-2xl italic text-center break-words whitespace-normal w-full leading-snug animate-in fade-in duration-500"
@@ -332,9 +362,7 @@ export default function TranslationView({ config, translation, onStop, className
                             onMouseDown={handleDividerMouseDown}
                             aria-hidden="true"
                         >
-                            {/* Full-height separator line */}
                             <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/8 group-hover:bg-white/20 transition-colors duration-200" />
-                            {/* Centered grip pip */}
                             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8 bg-white/25 group-hover:bg-white/55 rounded-full transition-colors duration-200" />
                         </div>
                     )}
@@ -342,18 +370,10 @@ export default function TranslationView({ config, translation, onStop, className
                     {/* ── Right panel — Translation ─────────────────────────── */}
                     {showRight && (
                         <div
-                            className="flex flex-col gap-3 p-8 overflow-hidden"
-                            style={
-                                viewMode === "split"
-                                    ? { flex: "1 1 0", minWidth: 0 }
-                                    : { flex: "1 1 auto" }
-                            }
+                            ref={rightPanelRef}
+                            className="flex flex-col gap-3 p-8 overflow-y-auto"
+                            style={rightStyle}
                         >
-                            {/* Language label */}
-                            <p className="text-[9px] text-gray-600 font-bold uppercase tracking-[0.2em] text-center">
-                                {config.targetLanguage}
-                            </p>
-
                             {/* Translation history */}
                             {liveHistory && history.map((entry, i) => {
                                 const fromEnd = history.length - 1 - i;
@@ -374,14 +394,12 @@ export default function TranslationView({ config, translation, onStop, className
                             <div className="flex-1 flex flex-col items-center justify-center min-h-[4rem]">
                                 {activeTranslation ? (
                                     activeTranslation.is_partial ? (
-                                        /* Dots — translation in progress */
                                         <span className="flex gap-2 items-center">
                                             <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
                                             <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
                                             <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
                                         </span>
                                     ) : (
-                                        /* Final translated text — fades in on key change */
                                         <p
                                             key={activeTranslation.translated}
                                             className="text-white text-2xl md:text-4xl font-bold leading-[1.3] text-center tracking-tight break-words whitespace-normal w-full animate-in fade-in duration-500"

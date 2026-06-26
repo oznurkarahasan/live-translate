@@ -77,8 +77,11 @@ cargo fmt && cargo clippy
 cd frontend
 npm run test:run
 npm run lint
-```
 
+#log
+RUST_LOG=backend=debug cargo run
+
+```
 ## Run
 
 1. Create environment file from example:
