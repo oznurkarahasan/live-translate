@@ -45,7 +45,7 @@ function historySlot(fromEnd: number) {
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
     // ── State ──────────────────────────────────────────────────────────────────
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [subtitles, setSubtitles] = useState<{ start: number; end: number; text: string }[]>([]);
+    const [subtitles, setSubtitles] = useState<{ start: number; end: number; original: string; text: string }[]>([]);
     const [currentTime, setCurrentTime] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [displayedTranslation, setDisplayedTranslation] = useState(translation);
@@ -147,7 +147,7 @@ export default function TranslationView({ config, translation, onStop, className
     if (config.source === "file") {
         const sub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         activeTranslation = sub
-            ? { original: "", translated: sub.text,                            is_partial: false }
+            ? { original: sub.original, translated: sub.text,                  is_partial: false }
             : isUploading
             ? { original: "", translated: "Analysing and translating video...", is_partial: false }
             : { original: "", translated: " ",                                  is_partial: false };

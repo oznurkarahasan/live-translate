@@ -425,7 +425,16 @@ pub async fn translate_text(
         messages.push(serde_json::json!({"role": "assistant", "content": translated}));
     }
 
-    messages.push(serde_json::json!({"role": "user", "content": text}));
+    // Suffix reminder on every final user message prevents language bleed — the
+    // model drifting from the target language back into the source language after
+    // several turns of context.  The directive is appended rather than prepended
+    // so it fires closest to the generation boundary (highest recency weight).
+    let user_content = format!(
+        "{}\n\n[Translate the above to {} ONLY. DO NOT output the source language.]",
+        text,
+        language_selection.target_language,
+    );
+    messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
     let body = serde_json::json!({
         "model": groq_model,

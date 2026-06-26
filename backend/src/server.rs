@@ -47,7 +47,7 @@ async fn serve_with_listener(
         .route("/settings", get(get_settings).post(update_settings))
         .route("/upload", axum::routing::post(handle_upload))
         .with_state(state)
-        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100 MB limit
+        .layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024)) // 300 MB limit
         .layer(CorsLayer::permissive());
 
     axum::serve(listener, app).await.unwrap();
@@ -117,7 +117,8 @@ async fn handle_socket(mut socket: WebSocket, tx: broadcast::Sender<TranslationU
 pub struct Subtitle {
     pub start: f64,
     pub end: f64,
-    pub text: String,
+    pub original: String,   // source-language transcript from Deepgram
+    pub text: String,       // translated text (equals original when same-language pair)
 }
 
 use axum::extract::Multipart;
@@ -227,7 +228,8 @@ async fn handle_upload(
         subtitles.push(Subtitle {
             start,
             end,
-            text: final_text,
+            original: text,       // always the raw Deepgram transcript
+            text: final_text,     // translated (or same as original for same-lang pairs)
         });
     }
 
