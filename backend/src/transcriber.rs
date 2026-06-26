@@ -153,7 +153,7 @@ pub async fn run_realtime_pipeline(
                                 Ok(translated_text) => {
                                     println!("[{}] {}", language_selection.target_language, translated_text);
 
-                                    translation_context.push(final_transcript.clone());
+                                    translation_context.push(translated_text.clone());
                                     if translation_context.len() > 3 {
                                         translation_context.remove(0);
                                     }

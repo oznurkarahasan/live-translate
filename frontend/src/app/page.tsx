@@ -21,6 +21,7 @@ export default function Home() {
   const [activeConfig, setActiveConfig] = useState<AppConfig | null>(null);
   const [data, setData] = useState<TranslationUpdate | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const isActiveRef = useRef(false);
 
   // Handle live updates from backend
   useEffect(() => {
@@ -31,6 +32,8 @@ export default function Home() {
       }
       return;
     }
+
+    isActiveRef.current = true;
 
     // Connect to Backend WebSocket
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "ws://127.0.0.1:3001/ws";
@@ -53,14 +56,14 @@ export default function Home() {
 
       socketRef.current.onclose = () => {
         console.log("Disconnected from Backend");
-        // Attempt reconnect after 5s if still active
-        if (activeConfig) setTimeout(connect, 5000);
+        if (isActiveRef.current) setTimeout(connect, 5000);
       };
     };
 
     connect();
 
     return () => {
+      isActiveRef.current = false;
       socketRef.current?.close();
     };
   }, [activeConfig]);
