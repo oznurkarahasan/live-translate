@@ -199,42 +199,66 @@ export default function TranslationView({ config, translation, onStop, className
                     />
                 )}
 
-                {/* Modern Translation Box */}
-                <div className="w-full max-w-5xl space-y-6">
+                {/* Translation area */}
+                <div className="w-full max-w-5xl">
                     {activeTranslation ? (
-                        <div className="flex flex-col items-center animate-in slide-in-from-bottom-8 duration-700">
-                            {/* Original Text (Subtle) */}
-                            {activeTranslation.original && (
-                                <p className={`text-lg md:text-xl font-medium mb-4 italic text-center max-w-2xl transition-colors duration-300 ${activeTranslation.is_partial ? "text-gray-500/60" : "text-gray-400/80"}`}>
-                                    &quot;{activeTranslation.original}&quot;
+                        <div className="flex flex-col items-center gap-4 animate-in fade-in duration-500">
+
+                            {/* ── Source text row ──────────────────────────────────────────────
+                                Always rendered at a fixed min-height so the main block below
+                                never shifts position when this row gains or loses content.
+                                Partial state  → partial STT transcript (bright, no quotes).
+                                Final state    → completed source sentence (dim, quoted).      */}
+                            <div className="min-h-[1.75rem] w-full max-w-2xl flex items-center justify-center px-4">
+                                <p className={`text-base md:text-lg italic text-center leading-snug transition-all duration-300 ${
+                                    activeTranslation.is_partial
+                                        ? "text-white/65 font-medium"
+                                        : "text-gray-400/60 font-normal"
+                                }`}>
+                                    {activeTranslation.original
+                                        ? activeTranslation.is_partial
+                                            ? activeTranslation.original
+                                            : `"${activeTranslation.original}"`
+                                        : " "}
                                 </p>
-                            )}
-
-                            {/* Translated Highlight */}
-                            <div className={`w-full bg-gradient-to-b backdrop-blur-3xl border p-10 rounded-[2.5rem] shadow-2xl relative transition-all duration-300 ${activeTranslation.is_partial ? "from-white/2 to-white/0 border-white/8" : "from-white/5 to-white/0 border-white/15"}`}>
-                                {/* Accent Decorations */}
-                                <div className={`absolute top-0 left-12 w-16 h-[2px] transition-colors duration-300 ${activeTranslation.is_partial ? "bg-emerald-500/20" : "bg-emerald-500/50"}`} />
-                                <div className={`absolute bottom-0 right-12 w-16 h-[2px] transition-colors duration-300 ${activeTranslation.is_partial ? "bg-blue-500/20" : "bg-blue-500/50"}`} />
-
-                                {activeTranslation.is_partial ? (
-                                    /* Partial: STT anlık metin + zıplayan noktalar */
-                                    <div className="flex items-center justify-center gap-3">
-                                        <p className="text-white/40 text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                            {activeTranslation.original}
-                                        </p>
-                                        <span className="flex gap-1 items-end pb-2 shrink-0">
-                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
-                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
-                                            <span className="w-1.5 h-1.5 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
-                                        </span>
-                                    </div>
-                                ) : (
-                                    /* Final: çeviriyi göster */
-                                    <p className="text-white text-3xl md:text-5xl font-bold leading-[1.3] text-center tracking-tight">
-                                        {activeTranslation.translated}
-                                    </p>
-                                )}
                             </div>
+
+                            {/* ── Main translation block ───────────────────────────────────────
+                                Partial state  → three bouncing dots (fixed height, no text).
+                                Final state    → translated text fades in via key-reset.
+                                The inner min-h prevents the box from collapsing to zero while
+                                dots are displayed, and gives the fade-in text a stable anchor. */}
+                            <div className={`w-full bg-gradient-to-b backdrop-blur-3xl border p-10 rounded-[2.5rem] shadow-2xl relative transition-all duration-500 ${
+                                activeTranslation.is_partial
+                                    ? "from-white/2 to-white/0 border-white/8"
+                                    : "from-white/5 to-white/0 border-white/15"
+                            }`}>
+                                {/* Accent decorations */}
+                                <div className={`absolute top-0 left-12 w-16 h-[2px] transition-colors duration-300 ${
+                                    activeTranslation.is_partial ? "bg-emerald-500/20" : "bg-emerald-500/50"
+                                }`} />
+                                <div className={`absolute bottom-0 right-12 w-16 h-[2px] transition-colors duration-300 ${
+                                    activeTranslation.is_partial ? "bg-blue-500/20" : "bg-blue-500/50"
+                                }`} />
+
+                                <div className="h-auto min-h-[3.5rem] flex items-center justify-center">
+                                    {activeTranslation.is_partial ? (
+                                        <span className="flex gap-2 items-center">
+                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:0ms]" />
+                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:150ms]" />
+                                            <span className="w-2 h-2 bg-emerald-400/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                                        </span>
+                                    ) : (
+                                        <p
+                                            key={activeTranslation.translated}
+                                            className="text-white text-2xl md:text-4xl font-bold leading-[1.3] text-center tracking-tight break-words whitespace-normal w-full animate-in fade-in duration-500"
+                                        >
+                                            {activeTranslation.translated}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+
                         </div>
                     ) : (
                         <div className="flex flex-col items-center justify-center p-20 gap-4 opacity-40">
