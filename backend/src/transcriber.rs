@@ -319,7 +319,7 @@ fn is_duplicate_transcript(new: &str, last: &str) -> bool {
     }
     let normalize = |s: &str| {
         s.trim()
-            .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'))
+            .trim_end_matches(['.', ',', '!', '?', ';', ':'])
             .to_lowercase()
     };
     normalize(new) == normalize(last)

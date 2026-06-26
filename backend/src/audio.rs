@@ -257,110 +257,110 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
     let sample_format = config_range.sample_format();
     let stream_config: cpal::StreamConfig = config_range.into();
 
+    type VadCallback = Box<dyn FnMut(&[f32]) + Send + 'static>;
+
     log::info!("Device native sample format: {:?}", sample_format);
 
     // The entire VAD pipeline lives inside one Box<dyn FnMut(&[f32])> so that
     // mutable state (noise_floor, hangover, pre_buffer) is created exactly once.
     // Option::take() transfers ownership into whichever format arm actually runs;
     // the other arms compile but are never reached at runtime.
-    let mut vad_cb: Option<Box<dyn FnMut(&[f32]) + Send + 'static>> = Some(Box::new(
-        move |data: &[f32]| {
-            let resampled = process_audio_frame(data, channels, sample_rate);
+    let mut vad_cb: Option<VadCallback> = Some(Box::new(move |data: &[f32]| {
+        let resampled = process_audio_frame(data, channels, sample_rate);
 
-            if resampled.is_empty() {
-                return;
-            }
+        if resampled.is_empty() {
+            return;
+        }
 
-            // ── Feature extraction ───────────────────────────────────────────
-            let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
+        // ── Feature extraction ───────────────────────────────────────────
+        let frame_ms = resampled.len() as f32 / 16_000.0 * 1000.0;
 
-            let rms =
-                (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32).sqrt();
+        let rms = (resampled.iter().map(|&x| x * x).sum::<f32>() / resampled.len() as f32).sqrt();
 
-            let zcr = zero_crossing_rate(&resampled);
+        let zcr = zero_crossing_rate(&resampled);
 
-            // ── VAD decision ─────────────────────────────────────────────────
-            //
-            // Two-stage pipeline:
-            //   Stage 1 (cheap):  RMS energy + ZCR band filter.
-            //                     Rejects obvious silence / impulse noise
-            //                     without touching the webrtc-vad API.
-            //   Stage 2 (accurate): webrtc-vad GMM algorithm on 10 ms frames.
-            //                     Only runs when Stage 1 passes.
+        // ── VAD decision ─────────────────────────────────────────────────
+        //
+        // Two-stage pipeline:
+        //   Stage 1 (cheap):  RMS energy + ZCR band filter.
+        //                     Rejects obvious silence / impulse noise
+        //                     without touching the webrtc-vad API.
+        //   Stage 2 (accurate): webrtc-vad GMM algorithm on 10 ms frames.
+        //                     Only runs when Stage 1 passes.
 
-            let dynamic_threshold = noise_floor * SNR_RATIO;
-            let energy_pass = rms > dynamic_threshold && zcr > ZCR_MIN && zcr < ZCR_MAX;
+        let dynamic_threshold = noise_floor * SNR_RATIO;
+        let energy_pass = rms > dynamic_threshold && zcr > ZCR_MIN && zcr < ZCR_MAX;
 
-            // Stage 2: confirm with webrtc-vad on 10 ms windows.
-            // We convert the resampled f32 frame to i16 and split into
-            // 160-sample chunks; speech is confirmed if ANY chunk is voiced.
-            let wvad_speech = if energy_pass {
-                let i16_frame: Vec<i16> = resampled
-                    .iter()
-                    .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-                    .collect();
+        // Stage 2: confirm with webrtc-vad on 10 ms windows.
+        // We convert the resampled f32 frame to i16 and split into
+        // 160-sample chunks; speech is confirmed if ANY chunk is voiced.
+        let wvad_speech = if energy_pass {
+            let i16_frame: Vec<i16> = resampled
+                .iter()
+                .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                .collect();
 
-                WVAD.with(|cell| {
-                    let mut vad = cell.borrow_mut();
-                    i16_frame
-                        .chunks(160)
-                        .filter(|chunk| chunk.len() == 160)
-                        .any(|chunk| vad.is_voice_segment(chunk).unwrap_or(false))
-                })
-            } else {
-                false
-            };
+            WVAD.with(|cell| {
+                let mut vad = cell.borrow_mut();
+                i16_frame
+                    .chunks(160)
+                    .filter(|chunk| chunk.len() == 160)
+                    .any(|chunk| vad.is_voice_segment(chunk).unwrap_or(false))
+            })
+        } else {
+            false
+        };
 
-            let is_speech = wvad_speech;
+        let is_speech = wvad_speech;
 
-            // ── Update adaptive noise floor (only during confirmed silence) ──
-            // We skip the update while the hangover is active to prevent
-            // voiced audio from dragging the floor upward.
-            if !is_speech && hangover_remaining_ms <= 0.0 {
-                noise_floor = (NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms)
-                    .max(NOISE_FLOOR_MIN);
-            }
+        // ── Update adaptive noise floor (only during confirmed silence) ──
+        // We skip the update while the hangover is active to prevent
+        // voiced audio from dragging the floor upward.
+        if !is_speech && hangover_remaining_ms <= 0.0 {
+            noise_floor = (NOISE_FLOOR_ALPHA * noise_floor + (1.0 - NOISE_FLOOR_ALPHA) * rms)
+                .max(NOISE_FLOOR_MIN);
+        }
 
-            // ── Hangover logic ───────────────────────────────────────────────
-            let was_silent = hangover_remaining_ms <= 0.0;
+        // ── Hangover logic ───────────────────────────────────────────────
+        let was_silent = hangover_remaining_ms <= 0.0;
 
-            if is_speech {
-                if was_silent {
-                    // ── Speech onset: flush the pre-speech ring buffer first ─
-                    // This recovers the ~160 ms audio that preceded detection,
-                    // so the start of the utterance is not clipped.
-                    for buffered in pre_buffer.drain(..) {
-                        if let Err(err) = tx.send(buffered) {
-                            log::error!("Failed to flush pre-buffer: {}", err);
-                            return;
-                        }
+        if is_speech {
+            if was_silent {
+                // ── Speech onset: flush the pre-speech ring buffer first ─
+                // This recovers the ~160 ms audio that preceded detection,
+                // so the start of the utterance is not clipped.
+                for buffered in pre_buffer.drain(..) {
+                    if let Err(err) = tx.send(buffered) {
+                        log::error!("Failed to flush pre-buffer: {}", err);
+                        return;
                     }
                 }
-                hangover_remaining_ms = HANGOVER_MS;
-            } else {
-                hangover_remaining_ms = (hangover_remaining_ms - frame_ms).max(0.0);
             }
+            hangover_remaining_ms = HANGOVER_MS;
+        } else {
+            hangover_remaining_ms = (hangover_remaining_ms - frame_ms).max(0.0);
+        }
 
-            // ── Route audio ──────────────────────────────────────────────────
-            let pcm = float_to_pcm16le(&resampled);
+        // ── Route audio ──────────────────────────────────────────────────
+        let pcm = float_to_pcm16le(&resampled);
 
-            if hangover_remaining_ms > 0.0 {
-                // Active or hanging-over: forward to transcriber
-                if let Err(err) = tx.send(pcm) {
-                    log::error!("Failed to queue audio chunk: {}", err);
-                }
-            } else {
-                // Silence: maintain the pre-speech ring buffer
-                if pre_buffer.len() >= PRE_SPEECH_FRAMES {
-                    pre_buffer.pop_front();
-                }
-                pre_buffer.push_back(pcm);
+        if hangover_remaining_ms > 0.0 {
+            // Active or hanging-over: forward to transcriber
+            if let Err(err) = tx.send(pcm) {
+                log::error!("Failed to queue audio chunk: {}", err);
             }
+        } else {
+            // Silence: maintain the pre-speech ring buffer
+            if pre_buffer.len() >= PRE_SPEECH_FRAMES {
+                pre_buffer.pop_front();
+            }
+            pre_buffer.push_back(pcm);
+        }
 
-            // ── Periodic diagnostic log ──────────────────────────────────────
-            let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-            if count.is_multiple_of(100) {
-                log::info!(
+        // ── Periodic diagnostic log ──────────────────────────────────────
+        let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count.is_multiple_of(100) {
+            log::info!(
                     "VAD | RMS: {:.4}  ZCR: {:.3}  floor: {:.4}  thr: {:.4}  energy_pass: {}  wvad: {}  hangover: {:.0}ms",
                     rms,
                     zcr,
@@ -370,9 +370,8 @@ pub fn start_streaming() -> anyhow::Result<AudioCapture> {
                     wvad_speech,
                     hangover_remaining_ms,
                 );
-            }
-        },
-    ));
+        }
+    }));
 
     // Build a stream using the device's native sample format.
     // Non-f32 formats are converted with simple arithmetic before entering the
