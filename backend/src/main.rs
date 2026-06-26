@@ -4,6 +4,7 @@
 mod audio;
 mod server;
 mod transcriber;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 
@@ -20,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let (tx, _) = broadcast::channel(128);
     let (settings_tx, settings_rx) = watch::channel(config.initial_language_selection());
 
-    tokio::spawn(server::start_server(tx.clone(), settings_tx));
+    tokio::spawn(server::start_server(tx.clone(), settings_tx, Arc::new(config.clone())));
 
     transcriber::run_realtime_pipeline(capture.rx, config, tx, settings_rx).await?;
 
