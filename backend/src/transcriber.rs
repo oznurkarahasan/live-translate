@@ -215,8 +215,10 @@ pub async fn run_realtime_pipeline(
                 }
                 changed = settings_rx.changed() => {
                     if changed.is_err() {
-                        log::warn!("Language settings channel closed");
-                        continue;
+                        // The server's AppState was dropped (server shutting down).
+                        // Exiting here is correct — there is no point reconnecting.
+                        log::info!("Language settings channel closed; pipeline stopping.");
+                        return Ok(());
                     }
 
                     let new_spoken_language = settings_rx.borrow().spoken_language.clone();
