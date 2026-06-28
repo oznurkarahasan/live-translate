@@ -20,6 +20,10 @@ interface AppConfig {
 // Key used in localStorage to persist language + source settings across page reloads.
 const STORAGE_KEY = "translation_config";
 
+// Shared secret sent to the backend on every request.
+// Set NEXT_PUBLIC_API_KEY in .env.local for production; leave empty for local dev.
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
 export default function Home() {
   const [activeConfig, setActiveConfig] = useState<AppConfig | null>(null);
   const [data, setData] = useState<TranslationUpdate | null>(null);
@@ -42,7 +46,10 @@ export default function Home() {
         // Sync language settings with the backend before opening the session.
         await fetch("http://127.0.0.1:3001/settings", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(API_KEY ? { "x-api-key": API_KEY } : {}),
+          },
           body: JSON.stringify({
             spoken_language: saved.spokenLanguage,
             target_language: saved.targetLanguage,
@@ -71,12 +78,15 @@ export default function Home() {
     isActiveRef.current = true;
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "ws://127.0.0.1:3001/ws";
+    // Browsers cannot send custom headers on WebSocket upgrades; pass the
+    // secret as a query param instead so the backend can validate it.
+    const wsUrl = API_KEY ? `${backendUrl}?key=${encodeURIComponent(API_KEY)}` : backendUrl;
 
     const connect = () => {
       // Re-check at fire time: the user may have stopped the session during
       // the 5-second reconnect delay, making isActiveRef false.
       if (!isActiveRef.current) return;
-      socketRef.current = new WebSocket(backendUrl);
+      socketRef.current = new WebSocket(wsUrl);
 
       socketRef.current.onopen = () => {
         console.log("Connected to Backend");
@@ -127,7 +137,10 @@ export default function Home() {
     try {
       await fetch("http://127.0.0.1:3001/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(API_KEY ? { "x-api-key": API_KEY } : {}),
+        },
         body: JSON.stringify({
           spoken_language: config.spokenLanguage,
           target_language: config.targetLanguage,

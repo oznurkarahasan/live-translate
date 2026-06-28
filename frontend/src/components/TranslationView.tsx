@@ -118,7 +118,12 @@ export default function TranslationView({ config, translation, onStop, className
                 try {
                     const formData = new FormData();
                     formData.append("file", config.file!);
-                    const r = await fetch("http://localhost:3001/upload", { method: "POST", body: formData });
+                    const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+                    const r = await fetch("http://localhost:3001/upload", {
+                        method: "POST",
+                        headers: apiKey ? { "x-api-key": apiKey } : {},
+                        body: formData,
+                    });
                     if (!r.ok) throw new Error(`Upload failed: ${r.statusText} - ${await r.text()}`);
                     const data = await r.json();
                     if (!isDisposed && Array.isArray(data)) {
