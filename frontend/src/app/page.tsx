@@ -13,8 +13,9 @@ interface TranslationUpdate {
 interface AppConfig {
   spokenLanguage: string;
   targetLanguage: string;
-  source: "camera" | "file" | "none";
+  source: "camera" | "file" | "none" | "youtube";
   file?: File;
+  youtubeUrl?: string;
 }
 
 // Key used in localStorage to persist language + source settings across page reloads.
@@ -156,7 +157,10 @@ export default function Home() {
       const persistable: AppConfig = {
         spokenLanguage: config.spokenLanguage,
         targetLanguage: config.targetLanguage,
+        // File objects can't be serialised — normalise to "none".
+        // YouTube URL is a plain string so we preserve it.
         source: config.source === "file" ? "none" : config.source,
+        youtubeUrl: config.source === "youtube" ? config.youtubeUrl : undefined,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
     } catch {

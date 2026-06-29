@@ -1,13 +1,41 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+
+function getCleanYoutubeUrl(url: string): string {
+    try {
+        const urlObj = new URL(url);
+        let videoId = "";
+        if (urlObj.hostname.includes("youtu.be")) {
+            videoId = urlObj.pathname.slice(1);
+        } else if (urlObj.hostname.includes("youtube.com")) {
+            videoId = urlObj.searchParams.get("v") || "";
+        }
+        return videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
+    } catch {
+        return url;
+    }
+}
+
+// react-player uses browser APIs — must be loaded client-side only.
+// The loading fallback keeps a DOM node in place during hydration so the
+// player's position in the tree is stable before the bundle arrives.
+const ReactPlayer = dynamic(
+    () => import("react-player").then((mod) => mod.default),
+    {
+        ssr: false,
+        loading: () => <div className="w-full h-full bg-black/50 animate-pulse" />,
+    }
+);
 
 interface TranslationViewProps {
     config: {
         spokenLanguage: string;
         targetLanguage: string;
-        source: "camera" | "file" | "none";
+        source: "camera" | "file" | "none" | "youtube";
         file?: File;
+        youtubeUrl?: string;
     };
     translation?: {
         original: string;
@@ -45,9 +73,11 @@ function historySlot(fromEnd: number) {
 export default function TranslationView({ config, translation, onStop, className }: TranslationViewProps) {
     // ── State ──────────────────────────────────────────────────────────────────
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [subtitles, setSubtitles] = useState<{ start: number; end: number; original: string; text: string }[]>([]);
+    const [subtitles, setSubtitles] = useState<{ start: number; end: number; original: string; text: string }[]>([]); // shared by file + youtube
     const [currentTime, setCurrentTime] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
+    const [isPlayerReady, setIsPlayerReady] = useState(false);
+    const [isMounted, setIsMounted] = useState(false);
     const [displayedTranslation, setDisplayedTranslation] = useState(translation);
     const lastFullTranslationAt = useRef<number>(0);
     const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -59,6 +89,10 @@ export default function TranslationView({ config, translation, onStop, className
     const [splitPercent, setSplitPercent] = useState(50);
     const isDragging   = useRef(false);
     const containerRef = useRef<HTMLDivElement>(null);
+
+    // ── Mount guard — ensures ReactPlayer never receives a URL before the
+    //    client DOM tree is fully stable (eliminates SSR/hydration AbortError).
+    useEffect(() => { setIsMounted(true); }, []);
 
     // ── Translation hold + dedup + history ────────────────────────────────────
     useEffect(() => {
@@ -137,6 +171,33 @@ export default function TranslationView({ config, translation, onStop, className
                 }
             };
             processUpload();
+
+        } else if (config.source === "youtube" && config.youtubeUrl) {
+            // The YouTube player is handled by ReactPlayer — no <video> ref needed.
+            // We POST the URL to the backend which downloads audio-only via yt-dlp,
+            // transcribes it with Deepgram, translates with Groq, and returns timestamps.
+            const processYouTube = async () => {
+                setTimeout(() => { if (!isDisposed) setIsUploading(true); }, 0);
+                try {
+                    const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+                    const r = await fetch("http://localhost:3001/api/translate-youtube", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(apiKey ? { "x-api-key": apiKey } : {}),
+                        },
+                        body: JSON.stringify({ url: config.youtubeUrl }),
+                    });
+                    if (!r.ok) throw new Error(`YouTube translation failed: ${r.statusText} — ${await r.text()}`);
+                    const data = await r.json();
+                    if (!isDisposed && Array.isArray(data)) setSubtitles(data);
+                } catch (e) {
+                    console.error("YouTube translation error:", e);
+                } finally {
+                    if (!isDisposed) setIsUploading(false);
+                }
+            };
+            processYouTube();
         }
 
         return () => {
@@ -147,15 +208,15 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
-    // ── Active translation (file mode: subtitle timestamps) ───────────────────
+    // ── Active translation: streaming for camera/none; timestamps for file/youtube ──
     let activeTranslation = displayedTranslation;
-    if (config.source === "file") {
+    if (config.source === "file" || config.source === "youtube") {
         const sub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
         activeTranslation = sub
-            ? { original: sub.original, translated: sub.text,                  is_partial: false }
+            ? { original: sub.original, translated: sub.text,                    is_partial: false }
             : isUploading
-            ? { original: "", translated: "Analysing and translating video...", is_partial: false }
-            : { original: "", translated: " ",                                  is_partial: false };
+            ? { original: "", translated: "Analysing and translating...",         is_partial: false }
+            : { original: "", translated: " ",                                    is_partial: false };
     }
 
     // ── Drag-to-resize ─────────────────────────────────────────────────────────
@@ -180,11 +241,39 @@ export default function TranslationView({ config, translation, onStop, className
 
     const showLeft    = viewMode === "split" || viewMode === "source-only";
     const showRight   = viewMode === "split" || viewMode === "translation-only";
-    const liveHistory = config.source !== "file";
+    // Rolling history is only meaningful for live streams.
+    const liveHistory = config.source === "camera" || config.source === "none";
 
     // Shared flex-basis values used by both column headers and panels.
     const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }  : { flex: "1 1 auto" };
     const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }            : { flex: "1 1 auto" };
+
+    // Memoised ReactPlayer element — its identity is stable across renders
+    // triggered by setSubtitles / setCurrentTime / setHistory so React never
+    // tears down the iframe.  Only re-computes when the URL or ready-state
+    // actually changes, which maps to a legitimate prop update.
+    const cleanUrl = getCleanYoutubeUrl(config.youtubeUrl ?? "");
+
+    const youtubePlayer = useMemo(() => (
+        <ReactPlayer
+            url={isMounted ? cleanUrl : ""}
+            width="100%"
+            height="100%"
+            playing={true}
+            controls={true}
+            config={{
+                youtube: {
+                    playerVars: { autoplay: 1, playsinline: 1 },
+                },
+            }}
+            onReady={() => setIsPlayerReady(true)}
+            onProgress={({ playedSeconds }) => setCurrentTime(playedSeconds)}
+            progressInterval={250}
+        />
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    ), [isMounted, cleanUrl]);
+
+    console.log("Loading YouTube URL:", cleanUrl);
 
     return (
         // Root fills the h-screen flex-col parent from page.tsx.
@@ -198,6 +287,13 @@ export default function TranslationView({ config, translation, onStop, className
                         <>
                             <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
                             <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-[0.16em]">Live</span>
+                        </>
+                    ) : config.source === "youtube" ? (
+                        <>
+                            <div className={`w-1.5 h-1.5 rounded-full ${isUploading ? "bg-amber-500 animate-pulse" : "bg-red-500"}`} />
+                            <span className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isUploading ? "text-amber-400" : "text-red-400"}`}>
+                                {isUploading ? "Translating" : "YouTube"}
+                            </span>
                         </>
                     ) : (
                         <>
@@ -224,22 +320,42 @@ export default function TranslationView({ config, translation, onStop, className
             {config.source !== "none" && (
                 <div className="flex-shrink-0 w-full max-w-5xl aspect-video mx-auto mt-4 px-4 relative">
                     <div className="w-full h-full bg-zinc-950 rounded-2xl overflow-hidden border border-white/10 relative">
-                        {isUploading && config.source === "file" && (
+
+                        {/* Shared loading overlay — shown while backend processes file or YouTube audio */}
+                        {isUploading && (config.source === "file" || config.source === "youtube") && (
                             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md gap-6">
                                 <div className="w-16 h-16 border-4 border-white/10 border-t-emerald-500 rounded-full animate-spin" />
-                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">Analysing Video...</p>
+                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">
+                                    {config.source === "youtube" ? "Downloading & Translating..." : "Analysing Video..."}
+                                </p>
                             </div>
                         )}
-                        <video
-                            ref={videoRef}
-                            autoPlay={config.source === "camera"}
-                            muted={config.source === "camera"}
-                            loop={config.source === "file"}
-                            playsInline
-                            controls={config.source === "file" && !isUploading}
-                            onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                            className={`w-full h-full transform-none transition-opacity duration-700 ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"} ${isUploading ? "opacity-0" : "opacity-100"}`}
-                        />
+
+                        {/* YouTube player — always mounted in the DOM tree.
+                             Visibility is controlled entirely via CSS so that
+                             state updates (subtitles, currentTime) never cause
+                             React to unmount the iframe and abort a play() call. */}
+                        <div className={
+                            config.source === "youtube"
+                                ? "absolute inset-0 w-full h-full"
+                                : "absolute inset-0 opacity-0 pointer-events-none"
+                        }>
+                            {youtubePlayer}
+                        </div>
+
+                        {/* Camera and file: native <video> element */}
+                        {config.source !== "youtube" && (
+                            <video
+                                ref={videoRef}
+                                autoPlay={config.source === "camera"}
+                                muted={config.source === "camera"}
+                                loop={config.source === "file"}
+                                playsInline
+                                controls={config.source === "file" && !isUploading}
+                                onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                                className={`w-full h-full transform-none transition-opacity duration-700 ${config.source === "camera" ? "-scale-x-100 object-contain" : "object-contain"} ${isUploading ? "opacity-0" : "opacity-100"}`}
+                            />
+                        )}
                     </div>
                 </div>
             )}
