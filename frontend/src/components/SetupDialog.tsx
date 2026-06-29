@@ -67,6 +67,8 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                 <div>
                     <p className="text-[11px] text-gray-500 uppercase tracking-widest font-bold mb-2">Spoken Language</p>
                     <select
+                        id="spoken-language"
+                        name="spokenLanguage"
                         value={spokenLanguage}
                         onChange={(e) => setSpokenLanguage(e.target.value)}
                         aria-label="Spoken Language"
@@ -82,6 +84,8 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                 <div>
                     <p className="text-[11px] text-gray-500 uppercase tracking-widest font-bold mb-2">Target Language</p>
                     <select
+                        id="target-language"
+                        name="targetLanguage"
                         value={targetLanguage}
                         onChange={(e) => setTargetLanguage(e.target.value)}
                         aria-label="Target Language"
@@ -152,7 +156,7 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                                 </p>
                                 <p className="text-xs text-gray-500">MP4, MOV (MAX. 300 MB)</p>
                             </div>
-                            <input type="file" className="hidden" accept="video/*" onChange={handleFileChange} />
+                            <input id="file-upload" name="file" type="file" className="hidden" accept="video/*" onChange={handleFileChange} />
                         </label>
                     ) : (
                         <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
@@ -181,6 +185,8 @@ export default function SetupDialog({ onStart, className }: SetupDialogProps) {
                 <div className="mb-6 animate-in slide-in-from-top-4 duration-300 space-y-2">
                     <p className="text-[11px] text-gray-500 uppercase tracking-widest font-bold">YouTube URL</p>
                     <input
+                        id="youtube-url"
+                        name="youtubeUrl"
                         type="url"
                         value={youtubeUrl}
                         onChange={(e) => setYoutubeUrl(e.target.value)}

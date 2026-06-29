@@ -1,33 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
+import { useEffect, useRef, useState } from "react";
 
-function getCleanYoutubeUrl(url: string): string {
+// Extracts the bare video ID from any YouTube URL variant so we can
+// construct a canonical embed URL without any tracking parameters.
+function extractYoutubeId(url: string): string {
     try {
-        const urlObj = new URL(url);
-        let videoId = "";
-        if (urlObj.hostname.includes("youtu.be")) {
-            videoId = urlObj.pathname.slice(1);
-        } else if (urlObj.hostname.includes("youtube.com")) {
-            videoId = urlObj.searchParams.get("v") || "";
-        }
-        return videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
+        const u = new URL(url);
+        if (u.hostname.includes("youtu.be")) return u.pathname.slice(1).split(/[?/]/)[0];
+        return u.searchParams.get("v") ?? "";
     } catch {
-        return url;
+        return "";
     }
 }
-
-// react-player uses browser APIs — must be loaded client-side only.
-// The loading fallback keeps a DOM node in place during hydration so the
-// player's position in the tree is stable before the bundle arrives.
-const ReactPlayer = dynamic(
-    () => import("react-player").then((mod) => mod.default),
-    {
-        ssr: false,
-        loading: () => <div className="w-full h-full bg-black/50 animate-pulse" />,
-    }
-);
 
 interface TranslationViewProps {
     config: {
@@ -208,6 +193,24 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
+    // ── YouTube time sync via IFrame API postMessage ──────────────────────────
+    // The YouTube IFrame Player API (enablejsapi=1) broadcasts infoDelivery
+    // messages containing currentTime.  We subscribe here instead of polling.
+    useEffect(() => {
+        if (config.source !== "youtube") return;
+        const handleMessage = (e: MessageEvent) => {
+            if (!String(e.origin).includes("youtube.com")) return;
+            try {
+                const data = JSON.parse(e.data as string);
+                if (data.event === "infoDelivery" && typeof data.info?.currentTime === "number") {
+                    setCurrentTime(data.info.currentTime);
+                }
+            } catch { /* non-JSON frames from YouTube — safe to ignore */ }
+        };
+        window.addEventListener("message", handleMessage);
+        return () => window.removeEventListener("message", handleMessage);
+    }, [config.source]);
+
     // ── Active translation: streaming for camera/none; timestamps for file/youtube ──
     let activeTranslation = displayedTranslation;
     if (config.source === "file" || config.source === "youtube") {
@@ -248,32 +251,9 @@ export default function TranslationView({ config, translation, onStop, className
     const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }  : { flex: "1 1 auto" };
     const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }            : { flex: "1 1 auto" };
 
-    // Memoised ReactPlayer element — its identity is stable across renders
-    // triggered by setSubtitles / setCurrentTime / setHistory so React never
-    // tears down the iframe.  Only re-computes when the URL or ready-state
-    // actually changes, which maps to a legitimate prop update.
-    const cleanUrl = getCleanYoutubeUrl(config.youtubeUrl ?? "");
-
-    const youtubePlayer = useMemo(() => (
-        <ReactPlayer
-            url={isMounted ? cleanUrl : ""}
-            width="100%"
-            height="100%"
-            playing={true}
-            controls={true}
-            config={{
-                youtube: {
-                    playerVars: { autoplay: 1, playsinline: 1 },
-                },
-            }}
-            onReady={() => setIsPlayerReady(true)}
-            onProgress={({ playedSeconds }) => setCurrentTime(playedSeconds)}
-            progressInterval={250}
-        />
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    ), [isMounted, cleanUrl]);
-
-    console.log("Loading YouTube URL:", cleanUrl);
+    // Only derive the video ID after mount so the iframe never renders
+    // during SSR or the hydration tick (avoids origin/postMessage mismatches).
+    const videoId = isMounted ? extractYoutubeId(config.youtubeUrl ?? "") : "";
 
     return (
         // Root fills the h-screen flex-col parent from page.tsx.
@@ -331,17 +311,22 @@ export default function TranslationView({ config, translation, onStop, className
                             </div>
                         )}
 
-                        {/* YouTube player — always mounted in the DOM tree.
-                             Visibility is controlled entirely via CSS so that
-                             state updates (subtitles, currentTime) never cause
-                             React to unmount the iframe and abort a play() call. */}
-                        <div className={
-                            config.source === "youtube"
-                                ? "absolute inset-0 w-full h-full"
-                                : "absolute inset-0 opacity-0 pointer-events-none"
-                        }>
-                            {youtubePlayer}
-                        </div>
+                        {/* YouTube: native iframe embed.
+                             react-player v3 removed the YouTube iframe player,
+                             so we embed directly.  enablejsapi=1 makes the
+                             IFrame API post infoDelivery messages with
+                             currentTime so subtitle sync works without polling. */}
+                        {config.source === "youtube" && videoId && (
+                            <iframe
+                                src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&enablejsapi=1`}
+                                className="absolute inset-0 w-full h-full"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                allowFullScreen
+                                style={{ border: "none" }}
+                                title="YouTube video player"
+                                onLoad={() => setIsPlayerReady(true)}
+                            />
+                        )}
 
                         {/* Camera and file: native <video> element */}
                         {config.source !== "youtube" && (
