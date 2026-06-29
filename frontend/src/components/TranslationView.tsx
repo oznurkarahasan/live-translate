@@ -61,6 +61,7 @@ export default function TranslationView({ config, translation, onStop, className
     const [subtitles, setSubtitles] = useState<{ start: number; end: number; original: string; text: string }[]>([]); // shared by file + youtube
     const [currentTime, setCurrentTime] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false); // true while backend translates YouTube audio
     const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isMounted, setIsMounted] = useState(false);
     const [displayedTranslation, setDisplayedTranslation] = useState(translation);
@@ -158,11 +159,12 @@ export default function TranslationView({ config, translation, onStop, className
             processUpload();
 
         } else if (config.source === "youtube" && config.youtubeUrl) {
-            // The YouTube player is handled by ReactPlayer — no <video> ref needed.
-            // We POST the URL to the backend which downloads audio-only via yt-dlp,
-            // transcribes it with Deepgram, translates with Groq, and returns timestamps.
+            // POST the URL to the backend: yt-dlp downloads audio-only, Deepgram
+            // transcribes, Groq translates, and we get back timestamped subtitles.
+            // isProcessing blocks the iframe so the user can't start playback
+            // before subtitles are ready.
             const processYouTube = async () => {
-                setTimeout(() => { if (!isDisposed) setIsUploading(true); }, 0);
+                setTimeout(() => { if (!isDisposed) setIsProcessing(true); }, 0);
                 try {
                     const apiKey = process.env.NEXT_PUBLIC_API_KEY;
                     const r = await fetch("http://localhost:3001/api/translate-youtube", {
@@ -179,7 +181,7 @@ export default function TranslationView({ config, translation, onStop, className
                 } catch (e) {
                     console.error("YouTube translation error:", e);
                 } finally {
-                    if (!isDisposed) setIsUploading(false);
+                    if (!isDisposed) setIsProcessing(false);
                 }
             };
             processYouTube();
@@ -194,14 +196,27 @@ export default function TranslationView({ config, translation, onStop, className
     }, [config]);
 
     // ── YouTube time sync via IFrame API postMessage ──────────────────────────
-    // The YouTube IFrame Player API (enablejsapi=1) broadcasts infoDelivery
-    // messages containing currentTime.  We subscribe here instead of polling.
+    // The YouTube IFrame Player API (enablejsapi=1) requires a two-step
+    // handshake: the iframe sends "onReady", we respond with "listening",
+    // and only then does it start broadcasting "infoDelivery" frames that
+    // carry currentTime while the video is playing.
     useEffect(() => {
         if (config.source !== "youtube") return;
         const handleMessage = (e: MessageEvent) => {
             if (!String(e.origin).includes("youtube.com")) return;
             try {
                 const data = JSON.parse(e.data as string);
+
+                // Step 1 — player is ready: register as a listener so it
+                // starts broadcasting infoDelivery events.
+                if (data.event === "onReady") {
+                    (e.source as Window)?.postMessage(
+                        JSON.stringify({ event: "listening", id: 1 }),
+                        e.origin
+                    );
+                }
+
+                // Step 2 — periodic time updates while playing.
                 if (data.event === "infoDelivery" && typeof data.info?.currentTime === "number") {
                     setCurrentTime(data.info.currentTime);
                 }
@@ -215,9 +230,10 @@ export default function TranslationView({ config, translation, onStop, className
     let activeTranslation = displayedTranslation;
     if (config.source === "file" || config.source === "youtube") {
         const sub = subtitles.find(s => currentTime >= s.start && currentTime <= s.end);
+        const loading = config.source === "youtube" ? isProcessing : isUploading;
         activeTranslation = sub
             ? { original: sub.original, translated: sub.text,                    is_partial: false }
-            : isUploading
+            : loading
             ? { original: "", translated: "Analysing and translating...",         is_partial: false }
             : { original: "", translated: " ",                                    is_partial: false };
     }
@@ -270,9 +286,9 @@ export default function TranslationView({ config, translation, onStop, className
                         </>
                     ) : config.source === "youtube" ? (
                         <>
-                            <div className={`w-1.5 h-1.5 rounded-full ${isUploading ? "bg-amber-500 animate-pulse" : "bg-red-500"}`} />
-                            <span className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isUploading ? "text-amber-400" : "text-red-400"}`}>
-                                {isUploading ? "Translating" : "YouTube"}
+                            <div className={`w-1.5 h-1.5 rounded-full ${isProcessing ? "bg-amber-500 animate-pulse" : "bg-red-500"}`} />
+                            <span className={`text-[10px] font-bold uppercase tracking-[0.16em] ${isProcessing ? "text-amber-400" : "text-red-400"}`}>
+                                {isProcessing ? "Translating" : "YouTube"}
                             </span>
                         </>
                     ) : (
@@ -301,13 +317,19 @@ export default function TranslationView({ config, translation, onStop, className
                 <div className="flex-shrink-0 w-full max-w-5xl aspect-video mx-auto mt-4 px-4 relative">
                     <div className="w-full h-full bg-zinc-950 rounded-2xl overflow-hidden border border-white/10 relative">
 
-                        {/* Shared loading overlay — shown while backend processes file or YouTube audio */}
-                        {isUploading && (config.source === "file" || config.source === "youtube") && (
+                        {/* File upload overlay */}
+                        {isUploading && config.source === "file" && (
                             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md gap-6">
                                 <div className="w-16 h-16 border-4 border-white/10 border-t-emerald-500 rounded-full animate-spin" />
-                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">
-                                    {config.source === "youtube" ? "Downloading & Translating..." : "Analysing Video..."}
-                                </p>
+                                <p className="text-white/80 tracking-[0.2em] uppercase font-bold text-sm animate-pulse">Analysing Video...</p>
+                            </div>
+                        )}
+
+                        {/* YouTube processing overlay — blocks playback until subtitles are ready */}
+                        {isProcessing && config.source === "youtube" && (
+                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm text-white">
+                                <div className="w-8 h-8 border-4 border-t-blue-500 border-white/20 rounded-full animate-spin mb-4" />
+                                <p className="text-sm font-medium tracking-wide">Audio is being processed and translated...</p>
                             </div>
                         )}
 
@@ -318,7 +340,7 @@ export default function TranslationView({ config, translation, onStop, className
                              currentTime so subtitle sync works without polling. */}
                         {config.source === "youtube" && videoId && (
                             <iframe
-                                src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&playsinline=1&rel=0&enablejsapi=1`}
+                                src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=0&playsinline=1&rel=0&enablejsapi=1`}
                                 className="absolute inset-0 w-full h-full"
                                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                                 allowFullScreen
