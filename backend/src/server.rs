@@ -192,9 +192,12 @@ async fn transcribe_and_translate(
     let stt_lang = crate::transcriber::resolve_deepgram_language(&settings.spoken_language, "en");
 
     let client = reqwest::Client::new();
+    let raw_pcm = content_type.as_deref() == Some("audio/raw");
     let dg_url = format!(
-        "https://api.deepgram.com/v1/listen?smart_format=true&utterances=true&punctuate=true&model={}&language={}",
-        config.deepgram_model, stt_lang
+        "https://api.deepgram.com/v1/listen?smart_format=true&utterances=true&punctuate=true&model={}&language={}{}",
+        config.deepgram_model,
+        stt_lang,
+        if raw_pcm { "&encoding=linear16&sample_rate=16000&channels=1" } else { "" },
     );
 
     let mut req_builder = client
@@ -442,58 +445,132 @@ async fn handle_youtube(
 
     log::info!("YouTube translation requested: {} (sanitized from: {})", clean_url, url);
 
-    // Download audio-only stream via yt-dlp to stdout.
-    // stderr is piped so we can print the raw bytes on failure — the inherited
-    // approach silenced errors when the pipe was full.  The URL is passed as a
-    // discrete argv element, never interpolated into a shell string.
-    let download = tokio::process::Command::new("yt-dlp")
-        .args([
-            "--no-warnings",
-            "--allow-unplayable-formats",
-            "--extractor-args", "youtube:player_client=web,android",
-            "-f", "ba/ba*",
-            "-o", "-",
-            &clean_url,
-        ])
-        .output();
+    // ── Step 1: Download compressed audio via yt-dlp ─────────────────────────
+    // The URL is passed as a discrete argv element — never shell-interpolated.
+    let yt_dlp_out = tokio::time::timeout(
+        Duration::from_secs(300),
+        tokio::process::Command::new("yt-dlp")
+            .args([
+                "--no-warnings",
+                "--allow-unplayable-formats",
+                "--extractor-args", "youtube:player_client=web,android",
+                "-f", "ba/ba*",
+                "-o", "-",
+                &clean_url,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output(),
+    )
+    .await
+    .map_err(|_| {
+        log::error!("yt-dlp timed out after 5 minutes for: {}", clean_url);
+        (StatusCode::GATEWAY_TIMEOUT, "yt-dlp timed out (5 min limit)".into())
+    })?
+    .map_err(|e| {
+        let hint = if e.kind() == std::io::ErrorKind::NotFound {
+            " — install yt-dlp: pip install yt-dlp"
+        } else {
+            ""
+        };
+        log::error!("yt-dlp spawn error{hint}: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("yt-dlp failed{hint}: {e}"))
+    })?;
 
-    let output = tokio::time::timeout(Duration::from_secs(300), download)
-        .await
-        .map_err(|_| {
-            log::error!("yt-dlp timed out after 5 minutes for: {}", clean_url);
-            (StatusCode::GATEWAY_TIMEOUT, "yt-dlp timed out (5 min limit)".into())
-        })?
-        .map_err(|e| {
-            let hint = if e.kind() == std::io::ErrorKind::NotFound {
-                " — install yt-dlp: pip install yt-dlp"
-            } else {
-                ""
-            };
-            log::error!("yt-dlp spawn error{hint}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("yt-dlp failed{hint}: {e}"))
-        })?;
-
-    if !output.status.success() {
-        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&output.stderr));
-        log::error!("yt-dlp exited {} for {}", output.status, clean_url);
+    if !yt_dlp_out.status.success() {
+        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&yt_dlp_out.stderr));
+        log::error!("yt-dlp exited {} for {}", yt_dlp_out.status, clean_url);
         return Err((
             StatusCode::BAD_GATEWAY,
-            format!("yt-dlp exited {}; see backend terminal for raw stderr", output.status),
+            format!("yt-dlp exited {}; see backend terminal for raw stderr", yt_dlp_out.status),
         ));
     }
 
-    let audio_bytes = output.stdout;
-    if audio_bytes.is_empty() {
-        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let compressed = yt_dlp_out.stdout;
+    if compressed.is_empty() {
+        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&yt_dlp_out.stderr));
         log::error!("yt-dlp produced no audio bytes for: {}", clean_url);
         return Err((StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp produced no audio output".into()));
     }
 
-    log::info!("Downloaded {} bytes of audio for {}", audio_bytes.len(), clean_url);
+    log::info!("Downloaded {} compressed bytes for {}", compressed.len(), clean_url);
 
-    // No Content-Type: Deepgram auto-detects m4a / opus / webm.
+    // ── Step 2: Decode to raw 16 kHz mono PCM via ffmpeg ─────────────────────
+    // tokio::join! writes ffmpeg's stdin and collects its stdout concurrently,
+    // which is required to avoid the OS pipe-buffer deadlock that would occur if
+    // we wrote all bytes before reading any output.
+    let mut ffmpeg = tokio::process::Command::new("ffmpeg")
+        .args(["-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            let hint = if e.kind() == std::io::ErrorKind::NotFound {
+                " — install ffmpeg: sudo apt install ffmpeg"
+            } else {
+                ""
+            };
+            log::error!("ffmpeg spawn error{hint}: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg failed to start{hint}: {e}"))
+        })?;
+
+    let mut ffmpeg_stdin = ffmpeg.stdin.take()
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "ffmpeg stdin unavailable".into()))?;
+
+    let (write_res, ffmpeg_out) = tokio::time::timeout(
+        Duration::from_secs(120),
+        async {
+            tokio::join!(
+                async move {
+                    use tokio::io::AsyncWriteExt;
+                    let r = ffmpeg_stdin.write_all(&compressed).await;
+                    drop(ffmpeg_stdin); // EOF → ffmpeg finishes encoding
+                    r
+                },
+                ffmpeg.wait_with_output(),
+            )
+        },
+    )
+    .await
+    .map_err(|_| {
+        log::error!("ffmpeg decode timed out for: {}", clean_url);
+        (StatusCode::GATEWAY_TIMEOUT, "ffmpeg decode timed out (2 min limit)".into())
+    })?;
+
+    write_res.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg stdin write: {e}"))
+    })?;
+    let ffmpeg_out = ffmpeg_out.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg wait: {e}"))
+    })?;
+
+    if !ffmpeg_out.status.success() {
+        log::error!("ffmpeg exited {} for {}", ffmpeg_out.status, clean_url);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ffmpeg decode failed: exited {}", ffmpeg_out.status),
+        ));
+    }
+
+    let audio_bytes = ffmpeg_out.stdout;
+    if audio_bytes.is_empty() {
+        log::error!("ffmpeg produced no PCM bytes for: {}", clean_url);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "ffmpeg produced no audio output".into()));
+    }
+
+    log::info!("Decoded {} PCM bytes for {}", audio_bytes.len(), clean_url);
+
+    // Send raw 16 kHz mono PCM to Deepgram; encoding params are added to the
+    // query string in transcribe_and_translate when content_type == "audio/raw".
     let settings = state.settings_tx.borrow().clone();
-    let subtitles = transcribe_and_translate(audio_bytes, None, &state.config, &settings).await?;
+    let subtitles = transcribe_and_translate(
+        audio_bytes,
+        Some("audio/raw".to_string()),
+        &state.config,
+        &settings,
+    )
+    .await?;
 
     Ok(Json(subtitles))
 }

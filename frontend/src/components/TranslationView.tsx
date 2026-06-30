@@ -177,7 +177,11 @@ export default function TranslationView({ config, translation, onStop, className
                     });
                     if (!r.ok) throw new Error(`YouTube translation failed: ${r.statusText} — ${await r.text()}`);
                     const data = await r.json();
-                    if (!isDisposed && Array.isArray(data)) setSubtitles(data);
+                    console.log("[youtube] backend response:", Array.isArray(data) ? `${data.length} subtitles` : data);
+                    if (!isDisposed && Array.isArray(data)) {
+                        console.log("[youtube] first subtitle:", data[0]);
+                        setSubtitles(data);
+                    }
                 } catch (e) {
                     console.error("YouTube translation error:", e);
                 } finally {
@@ -195,36 +199,67 @@ export default function TranslationView({ config, translation, onStop, className
         };
     }, [config]);
 
-    // ── YouTube time sync via IFrame API postMessage ──────────────────────────
-    // The YouTube IFrame Player API (enablejsapi=1) requires a two-step
-    // handshake: the iframe sends "onReady", we respond with "listening",
-    // and only then does it start broadcasting "infoDelivery" frames that
-    // carry currentTime while the video is playing.
+    // Only derive the video ID after mount so the iframe never renders
+    // during SSR or the hydration tick (avoids origin/postMessage mismatches).
+    const videoId = isMounted ? extractYoutubeId(config.youtubeUrl ?? "") : "";
+
+    // ── YouTube currentTime via official YT.Player API ───────────────────────
+    // The postMessage "onReady/listening/infoDelivery" handshake fires once on
+    // player init and is easy to miss. The official YT.Player API wraps the
+    // existing iframe and exposes getCurrentTime() so we can poll reliably.
     useEffect(() => {
-        if (config.source !== "youtube") return;
-        const handleMessage = (e: MessageEvent) => {
-            if (!String(e.origin).includes("youtube.com")) return;
-            try {
-                const data = JSON.parse(e.data as string);
+        if (config.source !== "youtube" || !videoId || !isMounted) return;
 
-                // Step 1 — player is ready: register as a listener so it
-                // starts broadcasting infoDelivery events.
-                if (data.event === "onReady") {
-                    (e.source as Window)?.postMessage(
-                        JSON.stringify({ event: "listening", id: 1 }),
-                        e.origin
-                    );
-                }
+        let player: any = null;
+        let timer: ReturnType<typeof setInterval> | null = null;
+        let disposed = false;
 
-                // Step 2 — periodic time updates while playing.
-                if (data.event === "infoDelivery" && typeof data.info?.currentTime === "number") {
-                    setCurrentTime(data.info.currentTime);
-                }
-            } catch { /* non-JSON frames from YouTube — safe to ignore */ }
+        const stopPolling = () => { if (timer) { clearInterval(timer); timer = null; } };
+        const startPolling = () => {
+            if (timer) return;
+            timer = setInterval(() => {
+                try {
+                    const t = player?.getCurrentTime?.();
+                    if (typeof t === "number") setCurrentTime(t);
+                } catch { /* player not ready */ }
+            }, 250);
         };
-        window.addEventListener("message", handleMessage);
-        return () => window.removeEventListener("message", handleMessage);
-    }, [config.source]);
+
+        const createPlayer = () => {
+            if (disposed || !(window as any).YT?.Player) return;
+            player = new (window as any).YT.Player("yt-player", {
+                events: {
+                    onReady: () => console.log("[youtube] YT.Player ready"),
+                    onStateChange: ({ data }: { data: number }) => {
+                        if (data === 1) startPolling(); // YT.PlayerState.PLAYING
+                        else stopPolling();
+                    },
+                },
+            });
+        };
+
+        if ((window as any).YT?.Player) {
+            createPlayer();
+        } else {
+            if (!document.getElementById("yt-api-script")) {
+                const s = document.createElement("script");
+                s.id = "yt-api-script";
+                s.src = "https://www.youtube.com/iframe_api";
+                document.head.appendChild(s);
+            }
+            const prev = (window as any).onYouTubeIframeAPIReady;
+            (window as any).onYouTubeIframeAPIReady = () => {
+                prev?.();
+                createPlayer();
+            };
+        }
+
+        return () => {
+            disposed = true;
+            stopPolling();
+            player?.destroy?.();
+        };
+    }, [config.source, videoId, isMounted]);
 
     // ── Active translation: streaming for camera/none; timestamps for file/youtube ──
     let activeTranslation = displayedTranslation;
@@ -266,10 +301,6 @@ export default function TranslationView({ config, translation, onStop, className
     // Shared flex-basis values used by both column headers and panels.
     const leftStyle  = viewMode === "split" ? { flexBasis: `${splitPercent}%`, flexShrink: 0 }  : { flex: "1 1 auto" };
     const rightStyle = viewMode === "split" ? { flex: "1 1 0" as const, minWidth: 0 }            : { flex: "1 1 auto" };
-
-    // Only derive the video ID after mount so the iframe never renders
-    // during SSR or the hydration tick (avoids origin/postMessage mismatches).
-    const videoId = isMounted ? extractYoutubeId(config.youtubeUrl ?? "") : "";
 
     return (
         // Root fills the h-screen flex-col parent from page.tsx.
@@ -340,9 +371,10 @@ export default function TranslationView({ config, translation, onStop, className
                              currentTime so subtitle sync works without polling. */}
                         {config.source === "youtube" && videoId && (
                             <iframe
+                                id="yt-player"
                                 src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=0&playsinline=1&rel=0&enablejsapi=1`}
                                 className="absolute inset-0 w-full h-full"
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                                 allowFullScreen
                                 style={{ border: "none" }}
                                 title="YouTube video player"
