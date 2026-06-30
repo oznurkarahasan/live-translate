@@ -76,6 +76,18 @@ export default function Home() {
       return;
     }
 
+    // YouTube and file-upload are batch HTTP — they never use live WebSocket
+    // updates. Keeping the socket open in those modes causes spurious
+    // "Frontend bağlantısı koptu" warnings when VAD broadcasts are emitted
+    // and the socket drops during React StrictMode double-invocation.
+    if (activeConfig.source === "youtube" || activeConfig.source === "file") {
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+      return;
+    }
+
     isActiveRef.current = true;
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "ws://127.0.0.1:3001/ws";

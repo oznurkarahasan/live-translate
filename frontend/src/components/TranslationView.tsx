@@ -2,6 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 
+// Minimal types for the YouTube IFrame Player API loaded at runtime.
+interface YTPlayer {
+    getCurrentTime(): number;
+    destroy(): void;
+}
+interface YTPlayerOptions {
+    events?: {
+        onReady?: () => void;
+        onStateChange?: (e: { data: number }) => void;
+    };
+}
+type YTWindow = Window & typeof globalThis & {
+    YT?: { Player: new (id: string, opts: YTPlayerOptions) => YTPlayer };
+    onYouTubeIframeAPIReady?: () => void;
+};
+
 // Extracts the bare video ID from any YouTube URL variant so we can
 // construct a canonical embed URL without any tracking parameters.
 function extractYoutubeId(url: string): string {
@@ -62,7 +78,6 @@ export default function TranslationView({ config, translation, onStop, className
     const [currentTime, setCurrentTime] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false); // true while backend translates YouTube audio
-    const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isMounted, setIsMounted] = useState(false);
     const [displayedTranslation, setDisplayedTranslation] = useState(translation);
     const lastFullTranslationAt = useRef<number>(0);
@@ -210,24 +225,25 @@ export default function TranslationView({ config, translation, onStop, className
     useEffect(() => {
         if (config.source !== "youtube" || !videoId || !isMounted) return;
 
-        let player: any = null;
+        let player: YTPlayer | null = null;
         let timer: ReturnType<typeof setInterval> | null = null;
         let disposed = false;
+        const ytWin = window as YTWindow;
 
         const stopPolling = () => { if (timer) { clearInterval(timer); timer = null; } };
         const startPolling = () => {
             if (timer) return;
             timer = setInterval(() => {
                 try {
-                    const t = player?.getCurrentTime?.();
+                    const t = player?.getCurrentTime();
                     if (typeof t === "number") setCurrentTime(t);
                 } catch { /* player not ready */ }
             }, 250);
         };
 
         const createPlayer = () => {
-            if (disposed || !(window as any).YT?.Player) return;
-            player = new (window as any).YT.Player("yt-player", {
+            if (disposed || !ytWin.YT?.Player) return;
+            player = new ytWin.YT.Player("yt-player", {
                 events: {
                     onReady: () => console.log("[youtube] YT.Player ready"),
                     onStateChange: ({ data }: { data: number }) => {
@@ -238,7 +254,7 @@ export default function TranslationView({ config, translation, onStop, className
             });
         };
 
-        if ((window as any).YT?.Player) {
+        if (ytWin.YT?.Player) {
             createPlayer();
         } else {
             if (!document.getElementById("yt-api-script")) {
@@ -247,8 +263,8 @@ export default function TranslationView({ config, translation, onStop, className
                 s.src = "https://www.youtube.com/iframe_api";
                 document.head.appendChild(s);
             }
-            const prev = (window as any).onYouTubeIframeAPIReady;
-            (window as any).onYouTubeIframeAPIReady = () => {
+            const prev = ytWin.onYouTubeIframeAPIReady;
+            ytWin.onYouTubeIframeAPIReady = () => {
                 prev?.();
                 createPlayer();
             };
@@ -378,7 +394,6 @@ export default function TranslationView({ config, translation, onStop, className
                                 allowFullScreen
                                 style={{ border: "none" }}
                                 title="YouTube video player"
-                                onLoad={() => setIsPlayerReady(true)}
                             />
                         )}
 

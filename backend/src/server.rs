@@ -113,7 +113,11 @@ async fn serve_with_listener(
     // ── Rate limiter: 60 requests / IP / 60 s ────────────────────────────────
     let rate_limiter = Arc::new(IpRateLimiter::new(60, 60));
 
-    let state = AppState { tx, settings_tx, config };
+    let state = AppState {
+        tx,
+        settings_tx,
+        config,
+    };
 
     // ── Router ───────────────────────────────────────────────────────────────
     let protected = Router::new()
@@ -200,9 +204,10 @@ async fn transcribe_and_translate(
         if raw_pcm { "&encoding=linear16&sample_rate=16000&channels=1" } else { "" },
     );
 
-    let mut req_builder = client
-        .post(&dg_url)
-        .header("Authorization", format!("Token {}", config.deepgram_api_key));
+    let mut req_builder = client.post(&dg_url).header(
+        "Authorization",
+        format!("Token {}", config.deepgram_api_key),
+    );
 
     if let Some(ct) = content_type {
         if !ct.is_empty() {
@@ -210,21 +215,27 @@ async fn transcribe_and_translate(
         }
     }
 
-    let dg_res = req_builder
-        .body(audio_bytes)
-        .send()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Deepgram API: {}", e)))?;
+    let dg_res = req_builder.body(audio_bytes).send().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Deepgram API: {}", e),
+        )
+    })?;
 
-    let dg_json: serde_json::Value = dg_res
-        .json()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Parse Deepgram JSON: {}", e)))?;
+    let dg_json: serde_json::Value = dg_res.json().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Parse Deepgram JSON: {}", e),
+        )
+    })?;
 
     let utterances = dg_json
         .pointer("/results/utterances")
         .and_then(|u| u.as_array())
-        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "No utterances in transcript".to_string()))?;
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No utterances in transcript".to_string(),
+        ))?;
 
     let mut phrases = Vec::new();
     for utt in utterances {
@@ -242,23 +253,85 @@ async fn transcribe_and_translate(
     for (start, end, text) in phrases {
         let mut final_text = text.clone();
         if !same_lang && !text.trim().is_empty() {
-            if let Ok(translated) = crate::transcriber::translate_text(
+            match translate_subtitle(
                 &client,
                 &config.groq_api_key,
                 &config.groq_model,
                 &text,
                 settings,
-                &[],
             )
             .await
             {
-                final_text = translated;
+                Ok(translated) => final_text = translated,
+                Err(e) => log::warn!(
+                    "Subtitle translation failed [{:.1}-{:.1}s]: {}",
+                    start,
+                    end,
+                    e
+                ),
             }
         }
-        subtitles.push(Subtitle { start, end, original: text, text: final_text });
+        subtitles.push(Subtitle {
+            start,
+            end,
+            original: text,
+            text: final_text,
+        });
     }
 
     Ok(subtitles)
+}
+
+// Simple direct-translation helper for batch subtitle processing.
+// Intentionally avoids the live-streaming interpreter prompt (which has a
+// "output nothing if no semantic value" rule that silently drops utterances).
+async fn translate_subtitle(
+    client: &reqwest::Client,
+    groq_api_key: &str,
+    groq_model: &str,
+    text: &str,
+    settings: &crate::transcriber::LanguageSelection,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": groq_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": format!(
+                    "Translate from {} to {}. Output ONLY the translation — no explanations, quotes, or extra text.",
+                    settings.spoken_language, settings.target_language
+                )
+            },
+            { "role": "user", "content": text }
+        ],
+        "temperature": 0.0
+    });
+
+    let resp = client
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .bearer_auth(groq_api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Groq request failed: {e}"))?;
+
+    let status = resp.status();
+    let payload: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Groq response parse failed: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("Groq API error ({}): {}", status, payload));
+    }
+
+    payload
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "Groq returned empty translation".to_string())
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -290,12 +363,18 @@ async fn update_settings(
     let target_language = payload.target_language.trim();
 
     if spoken_language.is_empty() || target_language.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "spoken_language and target_language are required".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "spoken_language and target_language are required".into(),
+        ));
     }
     if !matches!(spoken_language, "English" | "Turkish")
         || !matches!(target_language, "English" | "Turkish")
     {
-        return Err((StatusCode::BAD_REQUEST, "Only English and Turkish are supported for now".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Only English and Turkish are supported for now".into(),
+        ));
     }
 
     let normalized = LanguageSelection {
@@ -303,7 +382,10 @@ async fn update_settings(
         target_language: target_language.to_string(),
     };
     state.settings_tx.send(normalized.clone()).map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update language settings".into())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update language settings".into(),
+        )
     })?;
     Ok(Json(normalized))
 }
@@ -351,13 +433,8 @@ async fn handle_upload(
     }
 
     let settings = state.settings_tx.borrow().clone();
-    let subtitles = transcribe_and_translate(
-        file_data,
-        Some(content_type),
-        &state.config,
-        &settings,
-    )
-    .await?;
+    let subtitles =
+        transcribe_and_translate(file_data, Some(content_type), &state.config, &settings).await?;
 
     Ok(Json(subtitles))
 }
@@ -388,13 +465,22 @@ fn validate_youtube_url(url: &str) -> Result<String, (StatusCode, String)> {
     if !is_watch && !is_short {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Only https://youtube.com/watch?v=... and https://youtu.be/... URLs are accepted".into(),
+            "Only https://youtube.com/watch?v=... and https://youtu.be/... URLs are accepted"
+                .into(),
         ));
     }
 
     // Reject shell metacharacters as a second layer of defence.
-    if url.chars().any(|c| matches!(c, '\n' | '\r' | '\x00' | ';' | '|' | '`' | '$' | '\\' | '\'' | '"')) {
-        return Err((StatusCode::BAD_REQUEST, "URL contains disallowed characters".into()));
+    if url.chars().any(|c| {
+        matches!(
+            c,
+            '\n' | '\r' | '\x00' | ';' | '|' | '`' | '$' | '\\' | '\'' | '"'
+        )
+    }) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "URL contains disallowed characters".into(),
+        ));
     }
 
     Ok(url)
@@ -405,19 +491,20 @@ fn validate_youtube_url(url: &str) -> Result<String, (StatusCode, String)> {
 /// parameters (?si=..., &utm_source=..., etc.) that can confuse yt-dlp's
 /// parser and trigger bot-detection heuristics.
 fn sanitize_youtube_url(url: &str) -> Result<String, (StatusCode, String)> {
-    let video_id = if url.starts_with("https://youtu.be/") {
+    let video_id = if let Some(after) = url.strip_prefix("https://youtu.be/") {
         // Path segment after the domain, up to any '?' or '/'.
-        let after = &url["https://youtu.be/".len()..];
-        after.split(&['?', '/'][..]).next().unwrap_or("").to_string()
+        after
+            .split(&['?', '/'][..])
+            .next()
+            .unwrap_or("")
+            .to_string()
     } else {
         // watch? URL — pull only the 'v' query parameter.
         let query_start = url.find('?').map(|i| i + 1).unwrap_or(url.len());
         url[query_start..]
             .split('&')
             .find_map(|kv| {
-                let mut parts = kv.splitn(2, '=');
-                let key = parts.next()?;
-                let val = parts.next()?;
+                let (key, val) = kv.split_once('=')?;
                 (key == "v").then(|| val.to_string())
             })
             .unwrap_or_default()
@@ -425,7 +512,9 @@ fn sanitize_youtube_url(url: &str) -> Result<String, (StatusCode, String)> {
 
     // YouTube IDs are exactly 11 chars: alphanumeric, '-', '_'.
     if video_id.len() != 11
-        || !video_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        || !video_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -436,6 +525,10 @@ fn sanitize_youtube_url(url: &str) -> Result<String, (StatusCode, String)> {
     Ok(format!("https://www.youtube.com/watch?v={video_id}"))
 }
 
+// Batch-only endpoint: downloads audio via yt-dlp, decodes via ffmpeg, and
+// sends the PCM bytes to Deepgram REST + Groq in one shot.  state.tx (the
+// live WebSocket broadcast channel) is intentionally not used — all results
+// are collected into a Vec<Subtitle> and returned as a single JSON response.
 async fn handle_youtube(
     State(state): State<AppState>,
     Json(payload): Json<YoutubeRequest>,
@@ -443,7 +536,11 @@ async fn handle_youtube(
     let url = validate_youtube_url(&payload.url)?;
     let clean_url = sanitize_youtube_url(&url)?;
 
-    log::info!("YouTube translation requested: {} (sanitized from: {})", clean_url, url);
+    log::info!(
+        "YouTube translation requested: {} (sanitized from: {})",
+        clean_url,
+        url
+    );
 
     // ── Step 1: Download compressed audio via yt-dlp ─────────────────────────
     // The URL is passed as a discrete argv element — never shell-interpolated.
@@ -453,9 +550,12 @@ async fn handle_youtube(
             .args([
                 "--no-warnings",
                 "--allow-unplayable-formats",
-                "--extractor-args", "youtube:player_client=web,android",
-                "-f", "ba/ba*",
-                "-o", "-",
+                "--extractor-args",
+                "youtube:player_client=web,android",
+                "-f",
+                "ba/ba*",
+                "-o",
+                "-",
                 &clean_url,
             ])
             .stdout(std::process::Stdio::piped())
@@ -465,7 +565,10 @@ async fn handle_youtube(
     .await
     .map_err(|_| {
         log::error!("yt-dlp timed out after 5 minutes for: {}", clean_url);
-        (StatusCode::GATEWAY_TIMEOUT, "yt-dlp timed out (5 min limit)".into())
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "yt-dlp timed out (5 min limit)".into(),
+        )
     })?
     .map_err(|e| {
         let hint = if e.kind() == std::io::ErrorKind::NotFound {
@@ -474,33 +577,54 @@ async fn handle_youtube(
             ""
         };
         log::error!("yt-dlp spawn error{hint}: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("yt-dlp failed{hint}: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("yt-dlp failed{hint}: {e}"),
+        )
     })?;
 
     if !yt_dlp_out.status.success() {
-        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&yt_dlp_out.stderr));
+        eprintln!(
+            "yt-dlp raw stderr: {}",
+            String::from_utf8_lossy(&yt_dlp_out.stderr)
+        );
         log::error!("yt-dlp exited {} for {}", yt_dlp_out.status, clean_url);
         return Err((
             StatusCode::BAD_GATEWAY,
-            format!("yt-dlp exited {}; see backend terminal for raw stderr", yt_dlp_out.status),
+            format!(
+                "yt-dlp exited {}; see backend terminal for raw stderr",
+                yt_dlp_out.status
+            ),
         ));
     }
 
     let compressed = yt_dlp_out.stdout;
     if compressed.is_empty() {
-        eprintln!("yt-dlp raw stderr: {}", String::from_utf8_lossy(&yt_dlp_out.stderr));
+        eprintln!(
+            "yt-dlp raw stderr: {}",
+            String::from_utf8_lossy(&yt_dlp_out.stderr)
+        );
         log::error!("yt-dlp produced no audio bytes for: {}", clean_url);
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp produced no audio output".into()));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "yt-dlp produced no audio output".into(),
+        ));
     }
 
-    log::info!("Downloaded {} compressed bytes for {}", compressed.len(), clean_url);
+    log::info!(
+        "Downloaded {} compressed bytes for {}",
+        compressed.len(),
+        clean_url
+    );
 
     // ── Step 2: Decode to raw 16 kHz mono PCM via ffmpeg ─────────────────────
     // tokio::join! writes ffmpeg's stdin and collects its stdout concurrently,
     // which is required to avoid the OS pipe-buffer deadlock that would occur if
     // we wrote all bytes before reading any output.
     let mut ffmpeg = tokio::process::Command::new("ffmpeg")
-        .args(["-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "-"])
+        .args([
+            "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "-",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -512,37 +636,50 @@ async fn handle_youtube(
                 ""
             };
             log::error!("ffmpeg spawn error{hint}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg failed to start{hint}: {e}"))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("ffmpeg failed to start{hint}: {e}"),
+            )
         })?;
 
-    let mut ffmpeg_stdin = ffmpeg.stdin.take()
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "ffmpeg stdin unavailable".into()))?;
+    let mut ffmpeg_stdin = ffmpeg.stdin.take().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ffmpeg stdin unavailable".into(),
+        )
+    })?;
 
-    let (write_res, ffmpeg_out) = tokio::time::timeout(
-        Duration::from_secs(120),
-        async {
-            tokio::join!(
-                async move {
-                    use tokio::io::AsyncWriteExt;
-                    let r = ffmpeg_stdin.write_all(&compressed).await;
-                    drop(ffmpeg_stdin); // EOF → ffmpeg finishes encoding
-                    r
-                },
-                ffmpeg.wait_with_output(),
-            )
-        },
-    )
+    let (write_res, ffmpeg_out) = tokio::time::timeout(Duration::from_secs(120), async {
+        tokio::join!(
+            async move {
+                use tokio::io::AsyncWriteExt;
+                let r = ffmpeg_stdin.write_all(&compressed).await;
+                drop(ffmpeg_stdin); // EOF → ffmpeg finishes encoding
+                r
+            },
+            ffmpeg.wait_with_output(),
+        )
+    })
     .await
     .map_err(|_| {
         log::error!("ffmpeg decode timed out for: {}", clean_url);
-        (StatusCode::GATEWAY_TIMEOUT, "ffmpeg decode timed out (2 min limit)".into())
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "ffmpeg decode timed out (2 min limit)".into(),
+        )
     })?;
 
     write_res.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg stdin write: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ffmpeg stdin write: {e}"),
+        )
     })?;
     let ffmpeg_out = ffmpeg_out.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("ffmpeg wait: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ffmpeg wait: {e}"),
+        )
     })?;
 
     if !ffmpeg_out.status.success() {
@@ -556,7 +693,10 @@ async fn handle_youtube(
     let audio_bytes = ffmpeg_out.stdout;
     if audio_bytes.is_empty() {
         log::error!("ffmpeg produced no PCM bytes for: {}", clean_url);
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "ffmpeg produced no audio output".into()));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ffmpeg produced no audio output".into(),
+        ));
     }
 
     log::info!("Decoded {} PCM bytes for {}", audio_bytes.len(), clean_url);
